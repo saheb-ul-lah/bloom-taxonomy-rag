@@ -1,0 +1,154 @@
+// This is your Prisma schema file for the Question Paper Generator
+// Modified to support RAG implementation with notes/PYQ storage and processing
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id            String                 @id @default(uuid())
+  clerkId       String                 @unique
+  email         String
+  name          String
+  role          Role                   @default(PUBLIC) // ENUM Teacher or Admin as per diagram
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  subscriptions Subscription[]
+  chatHistory   ChatHistory[]
+  notes         Note[] // Added as per diagram
+  pyqs          PreviousYearQuestion[] // Added as per diagram
+  uploadedFiles UploadedFile[] // For tracking all file uploads
+}
+
+model Subscription {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  plan      String
+  startDate DateTime @default(now())
+  endDate   DateTime
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// Added as per diagram showing Notes[] in the Prisma model
+model Note {
+  id               String   @id @default(uuid())
+  title            String
+  content          String? // Optional content if stored directly
+  fileUrl          String? // URL to the stored file if applicable
+  qdrantId         String? // Reference ID for the vector in Qdrant database
+  qdrantCollection String? // Collection name in Qdrant where this note's vectors are stored
+  user             User     @relation(fields: [userId], references: [id])
+  userId           String
+  subject          String
+  classLevel       String
+  chapter          String
+  board            String
+  language         String   @default("en")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  // UG-BCA-DD style classification from diagram
+  institution      String? // e.g., "UG"
+  department       String? // e.g., "BCA"
+  courseCode       String? // e.g., "DD"
+  isVectorized     Boolean  @default(false) // Flag to track if this note has been vectorized in Qdrant
+}
+
+// Added as per diagram showing PYQ[] in the Prisma model
+model PreviousYearQuestion {
+  id               String   @id @default(uuid())
+  title            String
+  year             Int
+  fileUrl          String? // URL to the stored file
+  qdrantId         String? // Reference ID for the vector in Qdrant database
+  qdrantCollection String? // Collection name in Qdrant where this PYQ's vectors are stored
+  user             User     @relation(fields: [userId], references: [id])
+  userId           String
+  subject          String
+  classLevel       String
+  board            String
+  language         String   @default("en")
+  semester         String? // Optional semester information
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  // UG-BCA-DD style classification from diagram
+  institution      String? // e.g., "UG"
+  department       String? // e.g., "BCA"
+  courseCode       String? // e.g., "DD"
+  isVectorized     Boolean  @default(false) // Flag to track if this PYQ has been vectorized in Qdrant
+}
+
+// Generic model for tracking uploaded files (could be notes, PYQs, etc.)
+model UploadedFile {
+  id               String   @id @default(uuid())
+  fileName         String
+  fileType         String // PDF, DOCX, etc.
+  fileUrl          String
+  fileSize         Int // Size in bytes
+  uploadedBy       User     @relation(fields: [uploadedById], references: [id])
+  uploadedById     String
+  processed        Boolean  @default(false) // Whether the file has been processed for RAG
+  isVectorized     Boolean  @default(false) // Whether the file has been vectorized
+  qdrantIds        Json? // Array of vector IDs in Qdrant if this file was chunked into multiple vectors
+  qdrantCollection String? // Collection name in Qdrant where this file's vectors are stored
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  // Classification metadata
+  institution      String? // e.g., "UG"
+  department       String? // e.g., "BCA"
+  courseCode       String? // e.g., "DD"
+  subject          String?
+  classLevel       String?
+  chapter          String?
+}
+
+model ChatHistory {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  class     String
+  subject   String
+  chapter   String
+  messages  Json // [{role: "user", content: "..."}, {role: "assistant", content: "..."}]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Additional fields for RAG context
+  usedDocuments      Json? // IDs or references to documents used in responses
+  generatedQuestions Json? // Store generated questions separately if needed
+}
+
+// We no longer need the VectorStore model as vectors are stored directly in Qdrant
+
+// Added to store generated question papers
+model QuestionPaper {
+  id             String   @id @default(uuid())
+  title          String
+  subject        String
+  classLevel     String
+  questions      Json // Array of generated questions with bloom's taxonomy levels
+  bloomStructure Json // Distribution of questions across bloom's taxonomy levels
+  createdBy      String // User ID who created it
+  totalMarks     Int
+  duration       Int // Duration in minutes
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Classification metadata
+  institution String? // e.g., "UG"
+  department  String? // e.g., "BCA"
+  courseCode  String? // e.g., "DD"
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  PUBLIC
+}
