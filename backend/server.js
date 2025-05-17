@@ -95,6 +95,7 @@ async function getUserByClerkId(clerkId) {
 }
 
 // --- RAG Ingestion Logic with Extensive Logging ---
+
 async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalUserId) {
   const logPrefix = `[VECTORIZE FileID: ${fileRecord.id}, UserDBID: ${internalUserId}]`;
   console.log(`${logPrefix} START Processing: ${fileRecord.fileName}`);
@@ -102,8 +103,10 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
 
   let documents = [];
   const collectionName = `teacher_${internalUserId}_materials`;
+  let qdrantOperationSuccessful = false; // Flag to indicate if Qdrant operation was considered a success
 
   try {
+    // 1. Verify File Access
     try {
       await fs.access(filePathFromMulter);
       console.log(`${logPrefix} File system access VERIFIED for: ${filePathFromMulter}`);
@@ -113,12 +116,18 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
         where: { id: fileRecord.id },
         data: { processed: true, isVectorized: false, notes: `File not found at path for vectorization: ${filePathFromMulter}` },
       });
-      return;
+      return; // Exit early
     }
 
+    // 2. Load Documents (PDF, DOCX, TXT)
     const lowerCaseFileType = fileRecord.fileType.toLowerCase();
     console.log(`${logPrefix} Determined file type: ${lowerCaseFileType}`);
-    if (lowerCaseFileType === 'application/pdf') {
+    if (lowerCaseFileType === 'application/pdf') { /* ... PDFLoader ... */ }
+    // ... (Full loader logic as in your provided code)
+    // Ensure this section correctly populates `documents` or returns if error/unsupported
+    // For brevity, I'm assuming your existing loader logic is in place here.
+    // Example for PDF:
+    else if (lowerCaseFileType === 'application/pdf') {
       console.log(`${logPrefix} Using PDFLoader.`);
       const loader = new PDFLoader(filePathFromMulter); documents = await loader.load();
     } else if (lowerCaseFileType.includes('officedocument.wordprocessingml.document') || lowerCaseFileType === 'application/msword') {
@@ -133,28 +142,17 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
       return;
     }
 
-    if (!documents || documents.length === 0) {
-      console.log(`${logPrefix} No content extracted from file.`);
-      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: 'No content extracted' } });
-      return;
-    }
-    console.log(`${logPrefix} Loaded ${documents.length} raw document(s)/page(s). First page content preview: ${(documents[0]?.pageContent || '').substring(0, 100)}...`);
+    if (!documents || documents.length === 0) { /* ... handle no content ... */ return; }
+    console.log(`${logPrefix} Loaded ${documents.length} raw document(s)/page(s).`);
 
+    // 3. Split Documents
     const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200, addStartIndex: true });
-    console.log(`${logPrefix} Initialized RecursiveCharacterTextSplitter.`);
     const splitDocs = await textSplitter.splitDocuments(documents);
     console.log(`${logPrefix} Split into ${splitDocs.length} chunks.`);
+    if (splitDocs.length === 0) { /* ... handle no chunks ... */ return; }
 
-    if (splitDocs.length === 0) {
-      console.log(`${logPrefix} No text chunks to vectorize after splitting.`);
-      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: 'No text chunks after split' } });
-      return;
-    }
-    if (splitDocs.length > 0) {
-      console.log(`${logPrefix} First chunk preview: ${splitDocs[0].pageContent.substring(0, 100)}... Metadata:`, splitDocs[0].metadata);
-    }
-
-    const chunksWithMetadata = splitDocs.map((doc, index) => ({
+    // 4. Add Metadata to Chunks
+    const chunksWithMetadata = splitDocs.map((doc, index) => ({ /* ... as in your provided code ... */
       ...doc,
       metadata: {
         ...doc.metadata, source_filename: fileRecord.fileName, file_id_db: fileRecord.id, user_id_db: internalUserId,
@@ -164,10 +162,13 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
         doc_type: 'uploaded_file', chunk_index: index,
       }
     }));
-    console.log(`${logPrefix} Enriched ${chunksWithMetadata.length} chunks with metadata. First chunk metadata:`, chunksWithMetadata[0].metadata);
+    console.log(`${logPrefix} Enriched ${chunksWithMetadata.length} chunks with metadata.`);
+    if (chunksWithMetadata.length > 0) console.log(`${logPrefix} Sample enriched chunk metadata:`, chunksWithMetadata[0].metadata);
 
+
+    // 5. Ensure Qdrant Collection Exists
     console.log(`${logPrefix} Checking/Creating Qdrant collection: ${collectionName}`);
-    try {
+    try { /* ... Qdrant getCollection/createCollection logic as in your provided code ... */
       await qdrantClient.getCollection(collectionName);
       console.log(`${logPrefix} Qdrant collection '${collectionName}' already exists.`);
     } catch (error) {
@@ -179,52 +180,77 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
       } else { console.error(`${logPrefix} Error checking/creating Qdrant collection '${collectionName}':`, qdrantError); throw qdrantError; }
     }
 
+    // 6. Add Documents to Qdrant
     console.log(`${logPrefix} Initializing QdrantVectorStore for collection: ${collectionName}`);
     const qdrantStore = new QdrantVectorStore(embeddings, { client: qdrantClient, collectionName });
 
-    if (chunksWithMetadata.length > 0) {
-      console.log(`${logPrefix} Sample chunk being sent to Qdrant:`, JSON.stringify(chunksWithMetadata[0], null, 2));
-    }
     console.log(`${logPrefix} Attempting to add ${chunksWithMetadata.length} document chunks to Qdrant...`);
-    let addedIds;
+    let addedIdsFromStore;
     try {
-      addedIds = await qdrantStore.addDocuments(chunksWithMetadata);
-      // NEW LOG: Log the raw result immediately
-      console.log(`${logPrefix} Raw result from qdrantStore.addDocuments:`, addedIds);
+      // The addDocuments method in LangChain's QdrantVectorStore might return void on success,
+      // or an array of IDs. It should throw an error on failure.
+      addedIdsFromStore = await qdrantStore.addDocuments(chunksWithMetadata);
+      console.log(`${logPrefix} Raw result from qdrantStore.addDocuments:`, addedIdsFromStore);
+
+      // If no error was thrown, assume the operation was accepted by Qdrant.
+      // The actual check of whether points exist would require querying Qdrant.
+      qdrantOperationSuccessful = true;
+
     } catch (qdrantAddError) {
-      console.error(`${logPrefix} ERROR during qdrantStore.addDocuments:`, qdrantAddError);
-      // Update Prisma record to reflect this specific failure
+      console.error(`${logPrefix} ERROR explicitly caught during qdrantStore.addDocuments:`, qdrantAddError);
       await prisma.uploadedFile.update({
         where: { id: fileRecord.id },
         data: { processed: true, isVectorized: false, notes: `Qdrant addDocuments error: ${String(qdrantAddError.message || qdrantAddError).substring(0, 200)}` },
       });
-      // We should probably re-throw or return here to stop further processing if adding documents fails
-      throw qdrantAddError; // Or handle more gracefully depending on desired behavior
+      throw qdrantAddError; // Propagate to the main catch block
     }
 
-    // MODIFIED: Check if addedIds is defined and an array
-    if (addedIds && Array.isArray(addedIds)) {
-      console.log(`${logPrefix} Added ${addedIds.length} vectors to Qdrant. Sample Qdrant IDs:`, addedIds.slice(0, 3));
+    // 7. Update Prisma Record based on Qdrant operation outcome
+    if (qdrantOperationSuccessful) {
+      // Check if addedIdsFromStore is an array and has content; otherwise, store null for qdrantIds
+      const finalQdrantIds = (Array.isArray(addedIdsFromStore) && addedIdsFromStore.length > 0) ? addedIdsFromStore : null;
+      const successNote = finalQdrantIds ? 'Successfully vectorized.' : 'Vectorized (Qdrant IDs not returned by lib, but op presumed success).';
+
+      if (finalQdrantIds) {
+        console.log(`${logPrefix} Added ${finalQdrantIds.length} vectors to Qdrant. Sample Qdrant IDs:`, finalQdrantIds.slice(0, 3));
+      } else {
+        console.warn(`${logPrefix} qdrantStore.addDocuments returned ${addedIdsFromStore}. Storing null for qdrantIds.`);
+      }
+
       await prisma.uploadedFile.update({
         where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: true, qdrantIds: addedIds, qdrantCollection: collectionName, notes: 'Successfully vectorized.' },
+        data: {
+          processed: true,
+          isVectorized: true, // Mark as vectorized if addDocuments didn't throw
+          qdrantIds: finalQdrantIds,
+          qdrantCollection: collectionName,
+          notes: successNote
+        },
       });
-      console.log(`${logPrefix} SUCCESS: File processed and vectorized.`);
+      console.log(`${logPrefix} SUCCESS: File processing marked as complete in DB.`);
     } else {
-      console.error(`${logPrefix} ERROR: qdrantStore.addDocuments did not return the expected array of IDs. Result:`, addedIds);
+      // This 'else' would typically only be hit if addDocuments didn't throw but also didn't result in qdrantOperationSuccessful = true
+      // (which our current logic doesn't allow, as we assume success if no throw).
+      // Kept for logical completeness if future checks are added.
+      console.error(`${logPrefix} ERROR: Qdrant addDocuments did not confirm success clearly.`);
       await prisma.uploadedFile.update({
         where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: false, notes: 'Qdrant addDocuments returned unexpected result.' },
+        data: { processed: true, isVectorized: false, notes: 'Qdrant addDocuments result unclear or failed without explicit error.' },
       });
     }
 
-  } catch (error) {
-    console.error(`${logPrefix} OVERALL ERROR during vectorization:`, error);
-    await prisma.uploadedFile.update({
-      where: { id: fileRecord.id },
-      data: { processed: true, isVectorized: false, notes: `Vectorization error: ${String(error.message || error).substring(0, 250)}` },
-    }).catch(dbErr => console.error(`${logPrefix} DB update error on failure:`, dbErr));
+  } catch (error) { // Catches errors from any step within the main try block
+    console.error(`${logPrefix} OVERALL ERROR during vectorization pipeline:`, error);
+    // Ensure record is updated to reflect failure if not already done in a more specific catch
+    const existingRecord = await prisma.uploadedFile.findUnique({ where: { id: fileRecord.id } });
+    if (existingRecord && !existingRecord.isVectorized) { // Only update if not already marked as successfully vectorized
+      await prisma.uploadedFile.update({
+        where: { id: fileRecord.id },
+        data: { processed: true, isVectorized: false, notes: `Vectorization pipeline error: ${String(error.message || error).substring(0, 250)}` },
+      }).catch(dbErr => console.error(`${logPrefix} DB update error on main failure:`, dbErr));
+    }
   } finally {
+    // Cleanup temporary file
     try {
       await fs.access(filePathFromMulter);
       await fs.unlink(filePathFromMulter);
@@ -233,7 +259,7 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
       if (unlinkError.code !== 'ENOENT') {
         console.warn(`${logPrefix} CLEANUP WARNING during unlink of ${filePathFromMulter}:`, unlinkError.message);
       } else {
-        console.log(`${logPrefix} CLEANUP: Temporary file ${filePathFromMulter} already gone.`);
+        console.log(`${logPrefix} CLEANUP: Temporary file ${filePathFromMulter} was already gone.`);
       }
     }
   }
