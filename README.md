@@ -170,9 +170,9 @@ While the core RAG functionality is taking shape, there's a vast potential for f
 5.  **Support for More File Types:** Add loaders for PPTX, images (with OCR), etc.
 6.  **Enhanced Note-Taking:** Rich text editor for subject notes, ability to link notes to specific uploaded documents or textbook sections.
 
-**UI/UX Overhaul (The "Cool Factor"):**
+**UI/UX (The "Cool Factor"):**
 
-As per your request for a more visually appealing and modern UI:
+For a more visually appealing and modern UI:
 
 1.  **Landing Page Revamp:**
     *   **Professional Design:** A very long, scrollable landing page with distinct, animated sections.
@@ -220,7 +220,7 @@ As per your request for a more visually appealing and modern UI:
 
 2.  **Clone the Repository:**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/saheb-ul-lah/bloom-taxonomy-rag.git
     cd bloom-taxonomy-rag
     ```
 
