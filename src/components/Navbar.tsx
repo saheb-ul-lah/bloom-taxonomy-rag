@@ -1,4 +1,4 @@
-// src/components/Navbar.tsx
+// src/components/Navbar.jsx
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,12 @@ import {
   navigationMenuTriggerStyle
 } from "@/components/ui/navigation-menu";
 import { Menu } from "lucide-react";
+import { useAuth } from '@clerk/clerk-react'; // MODIFIED: Import useAuth
+import UserDropdown from '@/components/UserDropdown'; // MODIFIED: Import UserDropdown
 
-const Navbar: React.FC = () => {
+const Navbar = () => {
   const navigate = useNavigate();
+  const { isSignedIn } = useAuth(); // MODIFIED: Get authentication status
 
   return (
     <header className="py-4 px-6 glass-morphism backdrop-blur-lg border-b border-white/10 sticky top-0 z-50 flex justify-between items-center">
@@ -35,6 +38,7 @@ const Navbar: React.FC = () => {
               <NavigationMenuItem>
                 <NavigationMenuTrigger className="bg-transparent text-white hover:bg-white/10">Features</NavigationMenuTrigger>
                 <NavigationMenuContent className="glass-morphism">
+                  {/* ... (content unchanged) ... */}
                   <ul className="grid w-[400px] gap-3 p-4 md:w-[500px] md:grid-cols-2 lg:w-[600px]">
                     <li className="row-span-3">
                       <NavigationMenuLink asChild>
@@ -98,37 +102,45 @@ const Navbar: React.FC = () => {
                   Pricing
                 </NavigationMenuLink>
               </NavigationMenuItem>
-              <NavigationMenuItem>
-                <NavigationMenuLink 
-                  className={`${navigationMenuTriggerStyle()} bg-transparent text-white hover:bg-white/10`} 
-                  onClick={() => navigate('/dashboard')}
-                  style={{ cursor: 'pointer' }}
-                >
-                  Dashboard
-                </NavigationMenuLink>
-              </NavigationMenuItem>
+              {isSignedIn && ( // MODIFIED: Only show Dashboard if signed in
+                <NavigationMenuItem>
+                  <NavigationMenuLink 
+                    className={`${navigationMenuTriggerStyle()} bg-transparent text-white hover:bg-white/10`} 
+                    onClick={() => navigate('/dashboard')}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    Dashboard
+                  </NavigationMenuLink>
+                </NavigationMenuItem>
+              )}
             </NavigationMenuList>
           </NavigationMenu>
         </div>
       </div>
 
       <div className="flex items-center gap-4">
-        <Button 
-          variant="outline" 
-          className="hidden md:flex text-white border-white hover:bg-white/20 animate-fade-in transition-all duration-300" 
-          onClick={() => navigate('/chat')}
-        >
-          Login
-        </Button>
-        <Button 
-          className="hidden md:flex bg-gradient-to-r from-yellow-300 to-yellow-500 text-black hover:bg-yellow-400 animate-fade-in transition-all duration-300" 
-          onClick={() => navigate('/chat')}
-        >
-          Get Started
-        </Button>
+        {isSignedIn ? ( // MODIFIED: Show UserDropdown if signed in
+          <UserDropdown />
+        ) : (
+          <>
+            <Button 
+              variant="outline" 
+              className="hidden md:flex text-white border-white hover:bg-white/20 animate-fade-in transition-all duration-300" 
+              onClick={() => navigate('/sign-in')} // MODIFIED: Navigate to /sign-in
+            >
+              Login
+            </Button>
+            <Button 
+              className="hidden md:flex bg-gradient-to-r from-yellow-300 to-yellow-500 text-black hover:bg-yellow-400 animate-fade-in transition-all duration-300" 
+              onClick={() => navigate('/sign-up')} // MODIFIED: Navigate to /sign-up
+            >
+              Get Started
+            </Button>
+          </>
+        )}
         
         <Button variant="ghost" size="icon" className="md:hidden text-white hover:bg-white/10">
-          <Menu />
+          <Menu /> {/* TODO: Implement mobile menu toggle and links */}
         </Button>
       </div>
     </header>

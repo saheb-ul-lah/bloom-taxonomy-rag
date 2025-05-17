@@ -1,4 +1,3 @@
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -53,7 +52,8 @@
   }
 
   .dark {
-    --background: 240 10% 7%; /* Darker background */
+    --background: 240 10% 7%;
+    /* Darker background */
     --foreground: 210 40% 98%;
 
     --card: 222.2 84% 4.9%;
@@ -106,17 +106,25 @@
   .glass-morphism {
     @apply bg-black/20 backdrop-blur-lg border border-white/10 rounded-xl;
   }
-  
+
   .animated-gradient {
     background: linear-gradient(270deg, #C70039, #511849, #900C3F);
     background-size: 600% 600%;
     animation: gradientShift 15s ease infinite;
   }
-  
+
   @keyframes gradientShift {
-    0% { background-position: 0% 50% }
-    50% { background-position: 100% 50% }
-    100% { background-position: 0% 50% }
+    0% {
+      background-position: 0% 50%
+    }
+
+    50% {
+      background-position: 100% 50%
+    }
+
+    100% {
+      background-position: 0% 50%
+    }
   }
 
   .hover-scale {
@@ -126,4 +134,8 @@
   .hover-lift {
     @apply transition-all duration-300 hover:-translate-y-1;
   }
+}
+
+* {
+  color: black;
 }

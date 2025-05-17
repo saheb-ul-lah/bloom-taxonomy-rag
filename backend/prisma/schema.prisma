@@ -24,6 +24,9 @@ model User {
   notes         Note[] // Added as per diagram
   pyqs          PreviousYearQuestion[] // Added as per diagram
   uploadedFiles UploadedFile[] // For tracking all file uploads
+  teacherPreference TeacherPreference?
+  department    String? // ADDED: For teacher's department
+  institution   String? // ADDED: For teacher's institution
 }
 
 model Subscription {
@@ -107,6 +110,10 @@ model UploadedFile {
   subject          String?
   classLevel       String?
   chapter          String?
+  category         String?  // e.g., "question_paper", "lecture_notes", "textbook_chapter"
+  year             Int?     // If 'year' is specific to question papers
+  examType         String?  // If 'examType' is specific to question papers
+  notes            String? 
 }
 
 model ChatHistory {
@@ -145,10 +152,23 @@ model QuestionPaper {
   institution String? // e.g., "UG"
   department  String? // e.g., "BCA"
   courseCode  String? // e.g., "DD"
+  
 }
 
 enum Role {
   ADMIN
   TEACHER
   PUBLIC
+}
+
+
+model TeacherPreference {
+  id                String @id @default(uuid())
+  userId            String @unique // Each user has one set of these preferences
+  user              User   @relation(fields: [userId], references: [id])
+  promptText        String? @db.Text // For long prompt text
+  quickPreferences  Json?  // For the checkbox preferences
+  // Add other structured preferences here if needed (e.g. default Bloom distribution)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }

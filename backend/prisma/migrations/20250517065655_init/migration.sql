@@ -10,6 +10,8 @@ CREATE TABLE "User" (
     "role" "Role" NOT NULL DEFAULT 'PUBLIC',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "department" TEXT,
+    "institution" TEXT,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
@@ -95,6 +97,10 @@ CREATE TABLE "UploadedFile" (
     "subject" TEXT,
     "classLevel" TEXT,
     "chapter" TEXT,
+    "category" TEXT,
+    "year" INTEGER,
+    "examType" TEXT,
+    "notes" TEXT,
 
     CONSTRAINT "UploadedFile_pkey" PRIMARY KEY ("id")
 );
@@ -135,8 +141,23 @@ CREATE TABLE "QuestionPaper" (
     CONSTRAINT "QuestionPaper_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "TeacherPreference" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "promptText" TEXT,
+    "quickPreferences" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "TeacherPreference_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_clerkId_key" ON "User"("clerkId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "TeacherPreference_userId_key" ON "TeacherPreference"("userId");
 
 -- AddForeignKey
 ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -152,3 +173,6 @@ ALTER TABLE "UploadedFile" ADD CONSTRAINT "UploadedFile_uploadedById_fkey" FOREI
 
 -- AddForeignKey
 ALTER TABLE "ChatHistory" ADD CONSTRAINT "ChatHistory_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TeacherPreference" ADD CONSTRAINT "TeacherPreference_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
