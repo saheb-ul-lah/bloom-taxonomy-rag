@@ -1,141 +1,225 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Poppins:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Light Mode Base Colors (Inspired by modern SaaS) */
+    --background: 0 0% 98%; /* Slightly off-white */
+    --foreground: 240 10% 3.9%; /* Dark Gray */
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 240 10% 3.9%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 240 10% 3.9%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    /* Primary Action Colors (Your Theme) */
+    --primary-base: 345 100% 39%; /* #C70039 */
+    --primary-light: 345 100% 49%; /* Lighter shade */
+    --primary-dark: 345 100% 29%;  /* Darker shade */
+    --primary-foreground-base: 0 0% 100%; /* White */
+    
+    --primary: var(--primary-base);
+    --primary-foreground: var(--primary-foreground-base);
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    /* Secondary Action Colors (Your Theme) */
+    --secondary-base: 278 56% 20%; /* #511849 */
+    --secondary-light: 278 56% 30%;
+    --secondary-dark: 278 56% 10%;
+    --secondary-foreground-base: 0 0% 95%;
+    
+    --secondary: var(--secondary-base);
+    --secondary-foreground: var(--secondary-foreground-base);
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    /* Tertiary Action Colors (Your Theme) */
+    --tertiary-base: 337 87% 30%; /* #900C3F */
+    --tertiary-light: 337 87% 40%;
+    --tertiary-dark: 337 87% 20%;
+    --tertiary-foreground-base: 0 0% 100%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --tertiary: var(--tertiary-base);
+    --tertiary-foreground: var(--tertiary-foreground-base);
 
+    /* Accent Colors (for highlights, new) */
+    --accent-base: 190 95% 50%; /* A vibrant cyan/teal */
+    --accent-light: 190 95% 60%;
+    --accent-dark: 190 95% 40%;
+    --accent-foreground-base: 240 10% 3.9%; /* Dark for light accent */
+    
+    --accent: var(--accent-base);
+    --accent-foreground: var(--accent-foreground-base);
+    
+    /* Muted Colors (for borders, backgrounds, subtle text) */
+    --muted: 240 4.8% 90%; /* Lighter gray for light mode */
+    --muted-foreground: 240 3.8% 46.1%; /* Gray text */
+
+    /* Destructive Colors */
     --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    /* Other UI Elements */
+    --border: 240 5.9% 88%; /* Light gray border */
+    --input: 240 5.9% 90%;  /* Slightly darker input bg */
+    --ring: var(--primary-base); /* Ring color to primary */
 
-    --radius: 0.5rem;
+    --radius: 0.75rem; /* Slightly larger default radius for modern feel */
 
-    --sidebar-background: 0 0% 98%;
+    /* Brand specific colors (can be different from action colors) */
+    --brand-primary: 210 90% 55%; /* Example: Bright Blue */
+    --brand-secondary: 260 70% 45%; /* Example: Deep Purple */
+    --brand-accent: 30 100% 55%; /* Example: Vivid Orange */
+    
+    /* Gradients */
+    --gradient-start: var(--brand-primary);
+    --gradient-middle: var(--brand-secondary);
+    --gradient-end: var(--brand-accent);
 
-    --sidebar-foreground: 240 5.3% 26.1%;
-
-    --sidebar-primary: 240 5.9% 10%;
-
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    /* Font Families */
+    --font-sans: 'Poppins', sans-serif;
+    --font-heading: 'Montserrat', sans-serif;
   }
 
   .dark {
-    --background: 240 10% 7%;
-    /* Darker background */
-    --foreground: 210 40% 98%;
+    /* Dark Mode Base Colors */
+    --background: 240 10% 7%; /* Very Dark Blue/Gray */
+    --foreground: 0 0% 95%; /* Light Gray / Off-white */
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 240 8% 12%; /* Slightly lighter than background */
+    --card-foreground: 0 0% 95%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 240 10% 9%; /* Darker popover */
+    --popover-foreground: 0 0% 95%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    /* Primary Action Colors (Dark Mode - can be same or adjusted) */
+    --primary-base: 345 90% 55%; /* #C70039 - make it pop more on dark */
+    --primary-light: 345 90% 65%;
+    --primary-dark: 345 90% 45%;
+    --primary-foreground-base: 0 0% 100%;
+    
+    /* Secondary Action Colors (Dark Mode) */
+    --secondary-base: 278 60% 35%; /* #511849 - lighter for dark mode */
+    --secondary-light: 278 60% 45%;
+    --secondary-dark: 278 60% 25%;
+    --secondary-foreground-base: 0 0% 95%;
+    
+    /* Tertiary Action Colors (Dark Mode) */
+    --tertiary-base: 337 80% 45%; /* #900C3F - lighter for dark mode */
+    --tertiary-light: 337 80% 55%;
+    --tertiary-dark: 337 80% 35%;
+    --tertiary-foreground-base: 0 0% 100%;
+    
+    /* Accent Colors (Dark Mode) */
+    --accent-base: 190 95% 60%; /* Lighter cyan/teal */
+    --accent-light: 190 95% 70%;
+    --accent-dark: 190 95% 50%;
+    --accent-foreground-base: 240 10% 7%; /* Dark text for light accent */
+    
+    /* Muted Colors (Dark Mode) */
+    --muted: 240 5% 18%; /* Darker gray */
+    --muted-foreground: 240 5% 65%; /* Lighter gray text */
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    /* Destructive Colors (Dark Mode - can be same) */
+    --destructive: 0 70% 50%; /* Slightly adjusted for dark */
+    --destructive-foreground: 0 0% 98%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    /* Other UI Elements (Dark Mode) */
+    --border: 240 4% 20%; /* Dark gray border */
+    --input: 240 4% 15%;  /* Darker input bg */
+    --ring: var(--primary-base);
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    /* Brand specific colors (Dark Mode variants) */
+    --brand-primary: 210 90% 60%;
+    --brand-secondary: 260 70% 55%;
+    --brand-accent: 30 100% 60%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    /* Gradients can use the same or adjusted dark mode brand colors */
+    --gradient-start: var(--brand-primary);
+    --gradient-middle: var(--brand-secondary);
+    --gradient-end: var(--brand-accent);
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
+  html {
+    @apply scroll-smooth;
   }
-
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    @apply font-semibold tracking-tight; /* Added tracking */
+  }
+
+  /* Ensure inputs and textareas inherit foreground color for text */
+  input,
+  textarea,
+  select {
+    @apply text-foreground; /* This applies to the text typed INSIDE the input */
+    /* Background and border will be styled by components or input classes */
+  }
+  /* Placeholder styling */
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-muted-foreground opacity-70;
+  }
+}
+
+@layer components {
+  /* Custom button variants (examples) */
+  .btn-glow-primary {
+    @apply bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:bg-primary-dark hover:shadow-xl hover:shadow-primary/40 transition-all duration-300;
+  }
+  .btn-glow-accent {
+    @apply bg-brand-accent text-black shadow-lg shadow-brand-accent/40 hover:opacity-90 hover:shadow-xl hover:shadow-brand-accent/50 transition-all duration-300;
+  }
+  .btn-outline-cool {
+    @apply border-2 border-primary bg-transparent text-primary hover:bg-primary hover:text-primary-foreground transition-all duration-300;
+  }
+
+  /* Glassmorphism utility - refined */
+  .glass-pane {
+    @apply bg-card/60 backdrop-blur-xl border border-border/30;
+    /* Light mode: */
+    /* @apply bg-card/80 backdrop-blur-lg border border-border/50; */
+  }
+  .dark .glass-pane {
+    @apply bg-card/50 backdrop-blur-lg border border-border/20;
   }
 }
 
 @layer utilities {
-  .glass-morphism {
-    @apply bg-black/20 backdrop-blur-lg border border-white/10 rounded-xl;
+  /* Animated gradient text */
+  .text-gradient-animated {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-gradient-start via-gradient-middle to-gradient-end;
+    background-size: 200% auto;
+    animation: gradient-flow 3s linear infinite;
   }
 
-  .animated-gradient {
-    background: linear-gradient(270deg, #C70039, #511849, #900C3F);
-    background-size: 600% 600%;
-    animation: gradientShift 15s ease infinite;
+  /* For animated background on cards or sections */
+  .bg-gradient-animated {
+    @apply bg-gradient-to-r from-gradient-start via-gradient-middle to-gradient-end;
+    background-size: 400% 400%;
+    animation: gradient-flow 15s ease infinite;
   }
 
-  @keyframes gradientShift {
-    0% {
-      background-position: 0% 50%
-    }
-
-    50% {
-      background-position: 100% 50%
-    }
-
-    100% {
-      background-position: 0% 50%
-    }
+  /* For subtle shimmer effect on loading skeletons */
+  .shimmer-effect {
+    background: linear-gradient(to right, hsl(var(--muted)) 8%, hsl(var(--muted-foreground)/0.3) 18%, hsl(var(--muted)) 33%);
+    background-size: 1000px 100%; /* Large size for shimmer movement */
+    animation: shimmer 1.5s infinite linear;
   }
 
-  .hover-scale {
-    @apply transition-all duration-300 hover:scale-105;
+  /* Smooth scroll-margin-top for anchor links */
+  .scroll-mt-navbar {
+    scroll-margin-top: 80px; /* Adjust based on your sticky navbar height */
   }
 
-  .hover-lift {
-    @apply transition-all duration-300 hover:-translate-y-1;
-  }
-}
-
-* {
-  color: black;
+  /* Removed the global * { color: black; } as it was too restrictive */
 }

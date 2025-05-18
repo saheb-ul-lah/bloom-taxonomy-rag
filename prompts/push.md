@@ -1,3 +1,3 @@
 git add .
-git commit -m "Updated the readme file"
+git commit -m "Tailwind config fixes & ESM imports for plugins"
 git push origin main

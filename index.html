@@ -1,27 +1,45 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark"> <!--  dark class here for default, can be managed by JS later -->
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bloom Taxonomy RAG</title>
-  <meta name="description" content="Bloom Taxonomy RAG" />
+  <title>QuestionGenius AI | Bloom Taxonomy RAG</title>
+  <meta name="description" content="Generate targeted question papers with AI, aligned with Bloom's Taxonomy." />
   <meta name="author" content="saheb-ul-lah" />
 
-  <meta property="og:title" content="Bloom Taxonomy RAG" />
-  <meta property="og:description" content="Bloom Taxonomy RAG" />
+  <meta property="og:title" content="QuestionGenius AI" />
+  <meta property="og:description" content="AI-powered question generation for educators." />
   <meta property="og:type" content="website" />
+  <!-- Add your OG image URL here -->
+  <!-- <meta property="og:image" content="your_og_image_url_here" /> -->
+
+  <!-- Google Fonts: Poppins and Montserrat -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Favicon (optional, replace with your own) -->
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
 
   <style>
-    * {
-      color: black;
-
+    /* Basic scrollbar styling for a more modern look (optional) */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
     }
-
-    input,
-    textarea {
-      color: black;
+    ::-webkit-scrollbar-track {
+      background: hsl(var(--muted) / 0.2);
+      border-radius: 10px;
     }
+    ::-webkit-scrollbar-thumb {
+      background: hsl(var(--primary) / 0.6);
+      border-radius: 10px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: hsl(var(--primary));
+    }
+    /* Removed the global color black and input styles, will be handled by Tailwind/theme */
   </style>
 </head>
 
