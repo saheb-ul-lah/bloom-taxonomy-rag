@@ -7,7 +7,7 @@ import { patterns, streams, QuestionPreferencesType } from '@/types/questionPref
 
 interface PatternStreamSelectorProps {
   preferences: QuestionPreferencesType;
-  onPreferenceChange: (key: keyof QuestionPreferencesType, value: any) => void;
+  onPreferenceChange: <K extends keyof QuestionPreferencesType>(key: K, value: QuestionPreferencesType[K]) => void;
 }
 
 const PatternStreamSelector: React.FC<PatternStreamSelectorProps> = ({

@@ -1,298 +1,422 @@
-// src/pages/ChatPage.jsx
-import React, { useState, useEffect } from 'react';
-import { useAuth } from "@clerk/clerk-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-
-import { Button } from "@/components/ui/button";
-import { Upload, ChevronLeft, ChevronRight, Send } from "lucide-react"; // Added Send
-import ChatInput from '@/components/ChatInput';
-import ChatMessages from '@/components/ChatMessages';
-import UserDropdown from '@/components/UserDropdown';
-import ChatHistory from '@/components/ChatHistory';
-import { toast } from "@/components/ui/sonner";
-import QuestionPreferences from '@/components/QuestionPreferences';
-// No longer import QuestionPreferencesType, rely on structure.
+import React, { useState, useEffect, useRef } from 'react';
+import Navbar from '@/components/Navbar';
+// import Footer from '@/components/Footer'; // Usually no footer on chat pages
+import { useAuth, RedirectToSignIn, SignedIn, SignedOut } from '@clerk/clerk-react';
+import { Loader2, MessageSquare, Settings, UploadCloud, Bot, User, Paperclip, X } from 'lucide-react'; // Added icons
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiRequest from '@/lib/api';
 
+import ChatHistory from '@/components/ChatHistory';
+import ChatMessages from '@/components/ChatMessages';
+import ChatInput from '@/components/ChatInput';
+import QuestionPreferences from '@/components/QuestionPreferences';
+import { Button } from '@/components/ui/button';
+import { toast } from "@/components/ui/sonner";
+import { ScrollArea } from "@/components/ui/scroll-area"; // For chat messages
+// **** ADD THIS IMPORT ****
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+// *************************
+
+
+// Component-specific styles for ChatPage
+const ChatPageStyles = () => (
+  <style>{`
+    .chat-page-container {
+      height: calc(100vh - var(--navbar-height, 70px)); /* Full height minus navbar */
+      display: flex;
+      overflow: hidden; /* Prevent overall page scroll, internal areas will scroll */
+      background-color: hsl(var(--background));
+    }
+
+    .chat-sidebar {
+      width: 300px; /* Fixed width for sidebar */
+      min-width: 280px;
+      border-right: 1px solid hsl(var(--border));
+      background-color: hsl(var(--card) / 0.5); /* Slightly different for sidebar */
+      display: flex;
+      flex-direction: column;
+      transition: width 0.3s ease, margin-left 0.3s ease;
+    }
+    .chat-sidebar.collapsed {
+      width: 0;
+      min-width: 0;
+      overflow: hidden;
+      margin-left: -1px; /* To hide border completely */
+    }
+    @media (max-width: 768px) { /* Mobile: sidebar becomes an overlay or is hidden by default */
+      .chat-sidebar {
+        position: absolute;
+        z-index: 40; /* Above main chat content */
+        height: 100%;
+        /* Further mobile styling for overlay if needed */
+      }
+       .chat-sidebar:not(.mobile-open) { /* Example class to control mobile visibility */
+         width: 0;
+         min-width: 0;
+         overflow: hidden;
+       }
+    }
+
+
+    .chat-main-panel {
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden; /* Important for internal scrolling */
+      position: relative; /* For absolute positioned elements like file preview */
+    }
+
+    .chat-header {
+      padding: 1rem 1.5rem; /* py-4 px-6 */
+      border-bottom: 1px solid hsl(var(--border));
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: hsl(var(--card));
+    }
+    .chat-header-title {
+      font-family: var(--font-heading);
+      font-size: 1.25rem; /* text-xl */
+      font-weight: 600;
+      color: hsl(var(--foreground));
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .chat-messages-container {
+      flex-grow: 1;
+      overflow-y: auto; /* This is where messages scroll */
+      padding: 1.5rem; /* p-6 */
+    }
+
+    .chat-input-area {
+      padding: 1rem 1.5rem; /* py-4 px-6 */
+      border-top: 1px solid hsl(var(--border));
+      background-color: hsl(var(--card));
+      /* box-shadow: 0 -5px 15px -5px hsl(var(--background) / 0.1); */
+    }
+    .file-upload-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem; /* gap-3 */
+      margin-bottom: 0.75rem; /* mb-3 */
+    }
+    .selected-file-preview {
+      background-color: hsl(var(--muted) / 0.5);
+      padding: 0.5rem 0.75rem; /* py-2 px-3 */
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem; /* gap-2 */
+      font-size: 0.875rem; /* text-sm */
+      color: hsl(var(--muted-foreground));
+      animation: fadeIn 0.3s ease;
+    }
+    .selected-file-preview .lucide-x {
+      cursor: pointer;
+      color: hsl(var(--muted-foreground));
+    }
+    .selected-file-preview .lucide-x:hover {
+      color: hsl(var(--destructive));
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  `}</style>
+);
+
+
 const ChatPage = () => {
-  const { userId, getToken } = useAuth();
+  const { userId, isLoaded, getToken } = useAuth();
   const queryClient = useQueryClient();
+  const fileInputRef = useRef(null);
 
-  const [showSidebar, setShowSidebar] = useState(true);
-  const [activeChatHistoryId, setActiveChatHistoryId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [isLoadingResponse, setIsLoadingResponse] = useState(false);
+  const [currentChatId, setCurrentChatId] = useState(null); // To track active chat session
+  const [chatTitle, setChatTitle] = useState("New Chat"); // Title for current chat
+  const [currentPreferences, setCurrentPreferences] = useState(null);
+  const [selectedFileForUpload, setSelectedFileForUpload] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // For desktop sidebar toggle
 
-  const [questionPreferences, setQuestionPreferences] = useState({
-    pattern: 'mixed',
-    stream: 'computer-science',
-    marksDistribution: 'predefined',
-    customMarks: { mcq: 40, shortAnswer: 30, longAnswer: 20, practical: 10 }
-  });
-  const [customPromptText, setCustomPromptText] = useState('');
-
-  // --- TanStack Query for Chat History ---
+  // Fetch chat history list
   const { data: chatHistoriesData, isLoading: isLoadingHistories } = useQuery({
     queryKey: ['chatHistories', userId],
     queryFn: async () => {
       if (!userId) return [];
-      // Using fetch directly here for simplicity in queryFn, ensure getToken is available
-      const token = await getToken(); 
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/teacher/chat-history?clerkId=${userId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!response.ok) throw new Error('Failed to fetch chat histories');
-      const rawHistories = await response.json();
-      return rawHistories.map((h) => ({
-          id: h.id,
-          title: `Chat: ${h.subject || 'General'} - ${new Date(h.updatedAt).toLocaleDateString()}`,
-          date: new Date(h.updatedAt).toLocaleString(),
-          subject: h.subject,
-          classLevel: h.class, // class is a reserved keyword
-          updatedAt: h.updatedAt,
+      const histories = await apiRequest(`/teacher/chat-history?clerkId=${userId}`, {}, getToken);
+      return histories.map(h => ({ // Adapt to match ChatHistory component's expected props
+        id: h.id,
+        title: `${h.subject || 'Chat'} - ${h.class || 'General'} (${new Date(h.updatedAt).toLocaleDateString()})`,
+        date: new Date(h.updatedAt).toLocaleString(), // More detailed date
+        // You might need more fields if ChatHistory component uses them
       }));
     },
     enabled: !!userId,
   });
 
-  // --- TanStack Query for fetching a specific chat's messages ---
-  const { isLoading: isLoadingActiveChatMessages } = useQuery({
-    queryKey: ['chatMessages', activeChatHistoryId, userId],
+  // Fetch messages for a selected chat history
+  const { data: activeChatMessages, isLoading: isLoadingActiveChat } = useQuery({
+    queryKey: ['chatMessages', currentChatId, userId],
     queryFn: async () => {
-        if (!activeChatHistoryId || !userId) return [];
-        const token = await getToken();
-        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/teacher/chat-history/${activeChatHistoryId}?clerkId=${userId}`, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!response.ok) throw new Error('Failed to fetch chat messages');
-        const chat = await response.json();
-        // Ensure messages are in the correct format for ChatMessages component
-        return (chat.messages || []).map((msg) => ({ 
-            id: msg.id || crypto.randomUUID(), // Prefer ID from DB, fallback to UUID
-            text: msg.role === 'assistant' ? msg.content : (msg.content?.text || msg.content), // Assistant content might be JSON
-            user: msg.role === 'user' ? 'me' : 'assistant',
-            timestamp: new Date(msg.timestamp || chat.updatedAt),
-            attachments: msg.attachments || undefined,
-            usedSources: msg.role === 'assistant' ? (msg.content?.usedSources || chat.usedDocuments?.sources) : undefined,
-        }));
-    },
-    enabled: !!activeChatHistoryId && !!userId,
-    onSuccess: (data) => {
-        if (data) setMessages(data);
-        else setMessages([]); // Clear messages if no data (e.g., history deleted)
-    }
-  });
-
-  // --- TanStack Mutation for sending a message / generating questions ---
-  const sendMessageMutation = useMutation({
-    mutationFn: async ({ userQuery }) => { // Removed file from here, handle file uploads separately
-      if (!userId) throw new Error("User not authenticated");
+      if (!currentChatId || !userId) return null;
+      const historyDetail = await apiRequest(`/teacher/chat-history/${currentChatId}?clerkId=${userId}`, {}, getToken);
       
-      const payload = {
-          clerkId: userId,
-          userQuery,
-          questionPreferences,
-          customPromptText,
-          chatHistoryId: activeChatHistoryId,
-      };
-      console.log("Frontend: Sending payload to /api/chat/generate-questions:", payload);
-      // Pass getToken to apiRequest
-      return apiRequest('/chat/generate-questions', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      }, getToken);
+      // Transform messages for display
+      const formattedMessages = historyDetail.messages.map((msg, index) => ({
+        id: `msg-${currentChatId}-${index}`, // Create a unique ID for each message
+        user: msg.role === 'user' ? 'me' : 'assistant', // 'me' or 'assistant'
+        text: msg.content, // This could be string or array of questions
+        timestamp: msg.timestamp || new Date().toISOString(),
+        // attachments if any, and usedSources for assistant
+        usedSources: msg.role === 'assistant' ? msg.usedSources : undefined,
+        // Add more fields as needed by ChatMessages component
+      }));
+      setMessages(formattedMessages);
+      setChatTitle(`${historyDetail.subject || 'Chat'} - ${historyDetail.class || 'General'}`);
+      return historyDetail; // We might use other details from historyDetail later
     },
-    onMutate: ({ userQuery }) => {
-      const userMessage = {
-        id: crypto.randomUUID(),
-        text: userQuery,
-        user: 'me',
-        timestamp: new Date(),
-      };
-      const assistantPlaceholder = {
-        id: crypto.randomUUID(),
-        text: 'Generating questions...',
-        user: 'assistant',
-        timestamp: new Date(),
-        isGenerating: true,
-      };
-      setMessages(prev => [...prev, userMessage, assistantPlaceholder]);
-      setIsLoadingResponse(true);
-    },
+    enabled: !!currentChatId && !!userId,
     onSuccess: (data) => {
-      setMessages(prev => {
-        const newMessages = [...prev.filter(m => !m.isGenerating)];
-        const aiResponse = {
-          id: crypto.randomUUID(),
-          text: data.answer,
-          user: 'assistant',
-          timestamp: new Date(),
-          usedSources: data.usedSources,
-        };
-        return [...newMessages, aiResponse];
-      });
-      if (data.chatHistoryId && (!activeChatHistoryId || activeChatHistoryId !== data.chatHistoryId)) {
-          setActiveChatHistoryId(data.chatHistoryId);
+      if(data && data.messages && data.messages.length > 0) {
+        // Potentially find the last user message to re-populate preferences if available
+        const lastUserMessage = [...data.messages].reverse().find(m => m.role === 'user' && m.preferences);
+        if (lastUserMessage && lastUserMessage.preferences) {
+          setCurrentPreferences(lastUserMessage.preferences);
+        }
       }
-      queryClient.invalidateQueries({ queryKey: ['chatHistories', userId] });
-      queryClient.invalidateQueries({ queryKey: ['chatMessages', data.chatHistoryId, userId]});
-    },
-    onError: (error) => {
-      toast.error(error.message || "Failed to get response from AI.");
-      setMessages(prev => prev.filter(m => !m.isGenerating));
-    },
-    onSettled: () => {
-      setIsLoadingResponse(false);
     }
   });
 
-  const uploadMaterialMutation = useMutation({
-      mutationFn: async ({ file, metadata }) => {
-          if (!userId) throw new Error("User not authenticated for file upload.");
-          
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('clerkId', userId);
-          Object.keys(metadata).forEach(key => formData.append(key, metadata[key]));
-          
-          return apiRequest('/teacher/upload-material', {
-              method: 'POST',
-              body: formData,
-              isFormData: true,
-          }, getToken);
-      },
-      onSuccess: (data) => {
-          toast.success(data.message || `${data.file.name} uploaded and processing.`);
-          // Optionally, automatically send a message to chat about the uploaded file
-          sendMessageMutation.mutate({ userQuery: `I have uploaded ${data.file.name}. Please consider this for generating questions.` });
-      },
-      onError: (error) => {
-          toast.error(error.message || "File upload failed.");
-      }
-  });
 
-  const handleSendMessage = (text) => {
-    if (!userId) {
-      toast.error("Please log in to chat.");
-      return;
-    }
-    sendMessageMutation.mutate({ userQuery: text });
-  };
-
-  const handleFileUpload = (event) => {
-    const file = event.target.files?.[0];
-    if (file && userId) {
-      const metadata = {
-        subject: questionPreferences.stream || 'General',
-        classLevel: 'General', // Or get from preferences/form
-        chapter: 'General', // Or get from preferences/form
-      };
-      uploadMaterialMutation.mutate({ file, metadata });
-      event.target.value = null; // Reset file input
-    } else if (!userId) {
-      toast.error("Please log in to upload files.");
-    }
-  };
-  
-  const handleSelectHistory = (historyId) => {
-    if (activeChatHistoryId === historyId) return; // Avoid reloading same chat
-    setActiveChatHistoryId(historyId);
-    setMessages([]); // Clear current messages, new ones will load via useQuery
-    const selectedHistory = chatHistoriesData?.find(h => h.id === historyId);
-    toast.info(`Loading chat: ${selectedHistory?.title || 'Chat'}`);
-  };
-
-  const handleNewChat = () => {
-    setActiveChatHistoryId(null);
-    setMessages([
-      { id: 'welcome_new', text: 'New chat started. How can I help you generate questions today?', user: 'system', timestamp: new Date() }
-    ]);
-    toast.success("New chat started!");
-  };
-
-  const handleUpdatePreferences = (updatedPreferences) => {
-    setQuestionPreferences(updatedPreferences);
-    toast.info("Question preferences updated for this session.");
-  };
-
+  // Load custom AI prompt from localStorage (set by CustomPromptEditor)
+  const [customAIPrompt, setCustomAIPrompt] = useState("");
   useEffect(() => {
-    // Example: Load custom prompt from localStorage or a settings API
-    const savedPrompt = localStorage.getItem('customAIPrompt_teacher_' + userId);
-    if (savedPrompt) {
-      setCustomPromptText(savedPrompt);
+    if (userId) {
+      const storedPrompt = localStorage.getItem('customAIPrompt_teacher_' + userId);
+      if (storedPrompt) {
+        setCustomAIPrompt(storedPrompt);
+      }
+      // Optionally, fetch from backend if not in local storage or to ensure freshness
     }
   }, [userId]);
 
+
+  const generateQuestionsMutation = useMutation({
+    mutationFn: (payload) => apiRequest('/chat/generate-questions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }, getToken),
+    onSuccess: (data, variables) => {
+      setMessages(prev => prev.map(msg => msg.isGenerating ? {
+        ...msg,
+        id: `msg-ai-${Date.now()}`, // Ensure unique ID for AI response
+        text: data.answer,
+        isGenerating: false,
+        usedSources: data.usedSources,
+        timestamp: new Date().toISOString()
+      } : msg));
+      setCurrentChatId(data.chatHistoryId); // Update currentChatId if it's a new chat
+      queryClient.invalidateQueries({ queryKey: ['chatHistories', userId] }); // Refresh history list
+      if (!variables.chatHistoryId && data.chatHistoryId) { // If it was a new chat, update title
+         // Maybe fetch the new history item to get its subject/class for title
+      }
+    },
+    onError: (error) => {
+      setMessages(prev => prev.map(msg => msg.isGenerating ? {
+        ...msg,
+        text: `Error: ${error.message || "Failed to get response."}`,
+        isGenerating: false,
+        timestamp: new Date().toISOString()
+      } : msg));
+      toast.error("Failed to generate questions.");
+    }
+  });
+
+  const handleSendMessage = async (text) => {
+    if (!currentPreferences) {
+      toast.error("Please set your question preferences before sending a message.");
+      return;
+    }
+
+    const userMessage = {
+      id: `msg-user-${Date.now()}`,
+      user: 'me',
+      text: text,
+      timestamp: new Date().toISOString(),
+      attachments: selectedFileForUpload ? [{
+        id: 'file-1', // temp id
+        name: selectedFileForUpload.name,
+        type: selectedFileForUpload.type,
+        // url: URL.createObjectURL(selectedFileForUpload) // For local preview if needed
+      }] : []
+    };
+    const thinkingMessage = {
+      id: `msg-ai-thinking-${Date.now()}`,
+      user: 'assistant',
+      text: "Generating questions based on your request...",
+      isGenerating: true,
+      timestamp: new Date().toISOString()
+    };
+
+    setMessages(prev => [...prev, userMessage, thinkingMessage]);
+
+    const payload = {
+      clerkId: userId,
+      userQuery: text,
+      questionPreferences: currentPreferences,
+      customPromptText: customAIPrompt, // From state/localStorage
+      chatHistoryId: currentChatId,
+    };
+    
+    // If a file is selected, upload it first, then send message with file context (mock for now)
+    // This part needs backend to support file context in generate-questions or a separate upload-then-chat flow
+    if (selectedFileForUpload) {
+        toast.info(`File "${selectedFileForUpload.name}" would be processed with your query. (File handling with chat query TBD)`);
+        // Example: You might add a file_id to the payload if uploaded separately
+        // payload.fileContextId = await uploadFileAndGetId(selectedFileForUpload); 
+        setSelectedFileForUpload(null); // Clear after "sending"
+    }
+    
+    generateQuestionsMutation.mutate(payload);
+  };
+
+  const handleSelectHistory = (historyId) => {
+    setCurrentChatId(historyId);
+    // Messages will be loaded by the useQuery for activeChatMessages
+  };
+  
+  const handleNewChat = () => {
+    setCurrentChatId(null);
+    setMessages([]);
+    setChatTitle("New Chat");
+    setCurrentPreferences(null); // Reset preferences for new chat
+    setSelectedFileForUpload(null);
+    // queryClient.invalidateQueries({ queryKey: ['chatMessages'] }); // Not strictly needed as enabled is false
+  };
+
+  const handleFileSelect = (event) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) { // 10MB limit for chat context files
+        toast.error("File is too large for chat context (max 10MB). For larger RAG sources, use the dashboard upload.");
+        return;
+      }
+      // Add more specific file type checks if needed for chat context
+      setSelectedFileForUpload(file);
+    }
+  };
+
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="h-16 w-16 animate-spin text-primary" />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-black-900">
-      <header className="bg-gray-900 shadow-md border-b border-gray-800 p-4 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={() => setShowSidebar(!showSidebar)} 
-            className="h-8 w-8 text-white/70 hover:text-white hover:bg-theme-tertiary/30"
-          >
-            {showSidebar ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
-          </Button>
-          <h1 className="text-xl font-bold text-white bg-gradient-to-r from-theme-primary via-theme-tertiary to-theme-secondary bg-clip-text text-transparent">
-            QuestionGenius AI
-          </h1>
-        </div>
-        <UserDropdown />
-      </header>
-
-      <div className="flex flex-1 overflow-hidden">
-        <div 
-          className={`bg-gray-950 border-r border-gray-800 transition-all duration-300 ease-in-out ${
-            showSidebar ? 'w-72' : 'w-0'
-          } overflow-hidden`}
-        >
-          {showSidebar && (
-            <ChatHistory 
-              histories={chatHistoriesData || []} 
-              activeHistoryId={activeChatHistoryId} 
-              onSelectHistory={handleSelectHistory} 
-              onNewChat={handleNewChat}
-            />
-          )}
-        </div>
-
-        <div className="flex-1 flex flex-col bg-gray-850 relative">
-          {/* Main chat area */}
-          <div className="flex-1 overflow-y-auto p-6 pb-4"> {/* Reduced bottom padding */}
-            {isLoadingActiveChatMessages && messages.length === 0 && <p className="text-center text-gray-400 py-10">Loading messages...</p>}
-            {!isLoadingActiveChatMessages && messages.length === 0 && (
-                 <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                    <Send size={48} className="mb-4 opacity-50"/>
-                    <p>Start a conversation or select one from history.</p>
-                    <p className="text-sm">Upload materials using the button below.</p>
-                 </div>
-            )}
-            <ChatMessages messages={messages} />
-          </div>
-
-          {/* Chat input and controls area */}
-          <div className="bg-gray-900 border-t border-gray-800 p-4 flex flex-col"> {/* Removed rounded-t-xl */}
-            <QuestionPreferences onUpdatePreferences={handleUpdatePreferences} />
-            <div className="flex items-end gap-2">
-              <label className="cursor-pointer">
-                <input 
-                  type="file" 
-                  className="hidden" 
-                  onChange={handleFileUpload} 
-                  accept=".pdf,.doc,.docx,.txt"
+    <>
+      <ChatPageStyles />
+      {/* TooltipProvider should wrap the part of the tree where tooltips are used */}
+      {/* Or, if it's already in App.tsx at the root, that's fine too. */}
+      {/* For this specific component, wrapping its direct content is safer. */}
+      <TooltipProvider> 
+        <SignedIn>
+          <div className="flex flex-col h-screen overflow-hidden">
+            <Navbar />
+            <div className="chat-page-container">
+              {/* Sidebar for Chat History */}
+              <aside className={`chat-sidebar ${isSidebarOpen ? '' : 'collapsed'}`}>
+                <ChatHistory 
+                  histories={chatHistoriesData || []}
+                  activeHistoryId={currentChatId}
+                  onSelectHistory={handleSelectHistory}
+                  onNewChat={handleNewChat}
+                  isLoading={isLoadingHistories}
                 />
-                <Button variant="outline" size="icon" type="button" className="h-12 w-12 border-gray-700 hover:bg-theme-tertiary/30 hover:border-theme-tertiary transition-colors rounded-xl">
-                  <Upload className="h-5 w-5" />
-                </Button>
-              </label>
-              <ChatInput onSendMessage={handleSendMessage} />
+              </aside>
+
+              {/* Main Chat Panel */}
+              <main className="chat-main-panel">
+                <div className="chat-header">
+                  <div className="chat-header-title">
+                    <MessageSquare size={24} className="text-primary" />
+                    <h2 className="truncate" title={chatTitle}>{chatTitle}</h2>
+                  </div>
+                  <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
+                    {isSidebarOpen ? <X/> : <Settings />} {/* Icon changes based on state, replace Settings with Menu icon if preferred */}
+                  </Button>
+                </div>
+                
+                <ScrollArea className="chat-messages-container">
+                  {isLoadingActiveChat && currentChatId ? (
+                    <div className="flex justify-center items-center h-full">
+                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                      <p className="ml-3 text-muted-foreground">Loading chat...</p>
+                    </div>
+                  ) : messages.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground">
+                          <Bot size={48} className="mb-4 opacity-50"/>
+                          <h3 className="text-xl font-semibold font-heading text-foreground">Start a Conversation</h3>
+                          <p className="max-w-sm">
+                              Ask me to generate questions based on topics, Bloom's levels, or your uploaded materials (via dashboard).
+                              Set your preferences below to begin.
+                          </p>
+                      </div>
+                  ) : (
+                    <ChatMessages messages={messages} />
+                  )}
+                </ScrollArea>
+
+                <div className="chat-input-area">
+                  <QuestionPreferences onUpdatePreferences={setCurrentPreferences} />
+                  
+                  {selectedFileForUpload && (
+                    <div className="selected-file-preview">
+                      <Paperclip size={16} className="text-primary" />
+                      <span className="flex-grow truncate">{selectedFileForUpload.name}</span>
+                      <X size={18} onClick={() => setSelectedFileForUpload(null)} />
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button 
+                          variant="outline" 
+                          size="icon" 
+                          className="border-border text-muted-foreground hover:text-primary hover:border-primary"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <UploadCloud size={20} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent className="bg-popover text-popover-foreground border-border"><p>Attach file for context (Max 10MB)</p></TooltipContent>
+                    </Tooltip>
+                    <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" accept=".pdf,.doc,.docx,.txt" />
+                    
+                    <ChatInput onSendMessage={handleSendMessage} className="flex-grow" />
+                  </div>
+                </div>
+              </main>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </SignedIn>
+        <SignedOut>
+          <RedirectToSignIn />
+        </SignedOut>
+      </TooltipProvider>
+    </>
   );
 };
+
 export default ChatPage;

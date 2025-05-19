@@ -1,22 +1,83 @@
-// src/components/dashboard/TeachersInfo.jsx
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiRequest from '@/lib/api';
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { UserCircle, Edit2, Save, Loader2 } from "lucide-react";
+import { UserCircle, Edit3, Save, Loader2, Mail, Building, BookUser, Image as ImageIcon } from "lucide-react"; // Updated Icons
 import { toast } from '@/components/ui/sonner';
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
-// MODIFICATION: Add these imports
-import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar"; 
+// Component-specific styles
+const TeacherInfoStyles = () => (
+  <style>{`
+    .info-card {
+      background-color: hsl(var(--background)); /* Slightly different from main card bg for depth */
+      border: 1px solid hsl(var(--border));
+      border-radius: var(--radius-xl);
+      padding: 2rem; /* p-8 */
+      box-shadow: var(--shadow-medium);
+      transition: all 0.3s ease-in-out;
+    }
+    .info-card:hover {
+      box-shadow: 0 10px 25px hsl(var(--primary) / 0.15);
+    }
+    
+    .profile-avatar-large {
+      width: 120px; /* w-30 */
+      height: 120px; /* h-30 */
+      border-radius: var(--radius-full); /* rounded-full */
+      border: 4px solid hsl(var(--primary));
+      box-shadow: 0 0 15px hsl(var(--primary) / 0.3);
+    }
+    .profile-avatar-large .avatar-fallback-large {
+      font-size: 2.5rem; /* text-4xl */
+      font-family: var(--font-heading);
+    }
+
+    .info-field {
+      margin-bottom: 1.5rem; /* space-y-6 in spirit */
+    }
+    .info-field label {
+      display: block;
+      font-size: 0.875rem; /* text-sm */
+      font-weight: 500;
+      color: hsl(var(--muted-foreground));
+      margin-bottom: 0.375rem; /* mb-1.5 */
+      font-family: var(--font-sans);
+    }
+    .info-field .value, .info-field input {
+      font-size: 1rem; /* text-base */
+      color: hsl(var(--foreground));
+      font-family: var(--font-sans);
+    }
+    .info-field .value {
+      font-weight: 500;
+    }
+    .info-field input {
+      background-color: hsl(var(--input));
+      border-color: hsl(var(--border));
+      border-radius: var(--radius-lg);
+      padding: 0.75rem 1rem; /* py-3 px-4 */
+    }
+    .info-field input:focus {
+      border-color: hsl(var(--primary));
+      box-shadow: 0 0 0 2px hsl(var(--primary) / 0.2);
+    }
+    .edit-button-container {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 1.5rem; /* mt-6 */
+    }
+  `}</style>
+);
 
 const initialTeacherInfo = {
   name: "",
   department: "",
   institution: "",
   email: "",
+  // imageUrl: "" // If you plan to allow custom image uploads
 };
 
 const TeacherInfo = () => {
@@ -33,30 +94,23 @@ const TeacherInfo = () => {
       try {
         return await apiRequest(`/teacher/profile?clerkId=${userId}`, {}, getToken);
       } catch (error) {
-        if (error.status === 404) {
-          console.log("No teacher profile found, using Clerk data as default.");
-          return null; 
-        }
-        console.error("Error fetching teacher profile:", error);
+        if (error.status === 404) return null;
         throw error;
       }
     },
     enabled: !!userId,
     onSuccess: (data) => {
+      const baseInfo = {
+        name: clerkUser?.fullName || '',
+        email: clerkUser?.primaryEmailAddress?.emailAddress || '',
+        department: '',
+        institution: '',
+        // imageUrl: clerkUser?.imageUrl || '', // Use clerk image by default
+      };
       if (data) {
-        setEditForm({
-          name: data.name || clerkUser?.fullName || '',
-          department: data.department || '',
-          institution: data.institution || '',
-          email: data.email || clerkUser?.primaryEmailAddress?.emailAddress || '',
-        });
-      } else if (clerkUser) {
-        setEditForm({
-          name: clerkUser.fullName || '',
-          department: '',
-          institution: '',
-          email: clerkUser.primaryEmailAddress?.emailAddress || '',
-        });
+        setEditForm({ ...baseInfo, ...data });
+      } else {
+        setEditForm(baseInfo);
       }
     }
   });
@@ -87,110 +141,108 @@ const TeacherInfo = () => {
     const { name, value } = e.target;
     setEditForm(prev => ({ ...prev, [name]: value }));
   };
+  
+  // Fallback to clerkUser data if teacherInfo is loading or not yet fetched
+  const displayInfo = teacherInfo || editForm;
 
-  useEffect(() => {
-    if (!teacherInfo && clerkUser && !isEditing) {
-        setEditForm({
-            name: clerkUser.fullName || '',
-            email: clerkUser.primaryEmailAddress?.emailAddress || '',
-            department: '',
-            institution: '',
-        });
-    }
-  }, [clerkUser, teacherInfo, isEditing]);
-
-  const displayInfo = isEditing ? editForm : (teacherInfo || editForm); 
-
-  if (isLoadingInfo && !clerkUser) { 
-    return <Card className="col-span-1 md:col-span-4 glass-morphism border-theme-tertiary/20 p-6 flex justify-center items-center"><Loader2 className="h-8 w-8 animate-spin text-theme-primary" /> <span className="ml-2">Loading teacher info...</span></Card>;
+  if (isLoadingInfo && !clerkUser) {
+    return <div className="flex justify-center items-center p-10"><Loader2 className="h-10 w-10 animate-spin text-primary" /></div>;
   }
-
-  // Show error only if not editing and no clerkUser data to fall back on as a base
-  if (infoError && !isEditing && !clerkUser) { 
-    return <Card className="col-span-1 md:col-span-4 glass-morphism border-theme-tertiary/20 p-6 text-red-500">Error loading teacher info: {infoError.message}</Card>;
+  if (infoError && !clerkUser) {
+    return <div className="p-6 text-destructive bg-destructive/10 rounded-lg">Error: {infoError.message}</div>;
   }
 
   return (
-    <Card className="col-span-1 md:col-span-4 glass-morphism border-theme-tertiary/20">
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-xl text-white">Teacher Information</CardTitle>
-        <Button 
-          variant="ghost" 
-          size="icon"
-          onClick={() => {
-            if (isEditing) {
-              handleSave();
-            } else {
-              // When starting to edit, populate editForm with the most current displayInfo
-              setEditForm(displayInfo); 
-              setIsEditing(true);
-            }
-          }}
-          disabled={isEditing && saveProfileMutation.isPending}
-          className="h-8 w-8 text-white/70 hover:text-white"
-        >
-          {isEditing ? (saveProfileMutation.isPending ? <Loader2 size={18} className="animate-spin"/> : <Save size={18} />) : <Edit2 size={18} />}
-        </Button>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
-          <div className="flex justify-center items-center md:justify-start">
-            {/* THIS IS WHERE Avatar IS USED - AROUND LINE 141 or so */}
-            <Avatar className="w-24 h-24 text-3xl border-2 border-theme-tertiary/50"> 
-              <AvatarImage src={clerkUser?.imageUrl || displayInfo.imageUrl} alt={displayInfo.name || 'User'} /> {/* Added displayInfo.imageUrl as fallback if you store it */}
-              <AvatarFallback className="bg-theme-secondary/50">
-                {displayInfo.name ? displayInfo.name.split(' ').map(n => n[0]).join('').toUpperCase() : <UserCircle size={40}/>}
+    <>
+      <TeacherInfoStyles />
+      <div className="info-card">
+        <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 sm:gap-8 mb-8 pb-8 border-b border-border">
+          <div className="relative group">
+            <Avatar className="profile-avatar-large">
+              <AvatarImage src={clerkUser?.imageUrl || displayInfo.imageUrl} alt={displayInfo.name || 'User'} />
+              <AvatarFallback className="avatar-fallback-large bg-primary/20 text-primary">
+                {displayInfo.name ? displayInfo.name.split(' ').map(n => n[0]).join('').toUpperCase() : <UserCircle size={60} />}
               </AvatarFallback>
             </Avatar>
+            {/* Placeholder for image upload button if you implement it */}
+            {/* <Button variant="outline" size="icon" className="absolute bottom-2 right-2 bg-card p-1.5 rounded-full shadow-md group-hover:opacity-100 opacity-0 transition-opacity">
+              <ImageIcon size={16} />
+            </Button> */}
           </div>
-          
-          <div className="md:col-span-3 space-y-4">
-            {isEditing ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="name" className="text-sm text-white/70">Name</label>
-                  <Input id="name" name="name" value={editForm.name} onChange={handleInputChange} className="bg-theme-secondary/20 border-theme-tertiary/30" />
-                </div>
-                <div>
-                  <label htmlFor="email" className="text-sm text-white/70">Email</label>
-                  <Input id="email" name="email" type="email" value={editForm.email} onChange={handleInputChange} className="bg-theme-secondary/20 border-theme-tertiary/30" />
-                </div>
-                <div>
-                  <label htmlFor="department" className="text-sm text-white/70">Department</label>
-                  <Input id="department" name="department" value={editForm.department} onChange={handleInputChange} placeholder="e.g., Computer Science" className="bg-theme-secondary/20 border-theme-tertiary/30" />
-                </div>
-                <div>
-                  <label htmlFor="institution" className="text-sm text-white/70">Institution</label>
-                  <Input id="institution" name="institution" value={editForm.institution} onChange={handleInputChange} placeholder="e.g., Dibrugarh University" className="bg-theme-secondary/20 border-theme-tertiary/30" />
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
-                <div>
-                  <p className="text-sm text-white/70">Name</p>
-                  <p className="font-semibold text-white text-lg">{displayInfo.name || 'Not Set'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-white/70">Email</p>
-                  <p className="font-semibold text-white">{displayInfo.email || 'Not Set'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-white/70">Department</p>
-                  <p className="font-semibold text-white">{displayInfo.department || 'Not Set'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-white/70">Institution</p>
-                  <p className="font-semibold text-white">{displayInfo.institution || 'Not Set'}</p>
-                </div>
-              </div>
+
+          <div className="text-center sm:text-left flex-grow">
+            <h2 className="text-2xl sm:text-3xl font-bold font-heading text-foreground mb-1">
+              {isEditing ? editForm.name : displayInfo.name || 'Your Name'}
+            </h2>
+            <p className="text-md text-muted-foreground flex items-center justify-center sm:justify-start">
+              <Mail size={16} className="mr-2 opacity-70" />
+              {isEditing ? editForm.email : displayInfo.email || 'your.email@example.com'}
+            </p>
+            {!isEditing && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsEditing(true)}
+                className="mt-4 border-primary/50 text-primary hover:bg-primary/10 hover:text-primary group"
+              >
+                <Edit3 size={16} className="mr-2 transition-transform duration-300 group-hover:rotate-[-15deg]" /> Edit Profile
+              </Button>
             )}
           </div>
         </div>
-      </CardContent>
-    </Card>
+
+        {isEditing ? (
+          <form onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+              <div className="info-field">
+                <label htmlFor="name">Full Name</label>
+                <Input id="name" name="name" value={editForm.name} onChange={handleInputChange} placeholder="Enter your full name" />
+              </div>
+              <div className="info-field">
+                <label htmlFor="email">Email Address</label>
+                <Input id="email" name="email" type="email" value={editForm.email} onChange={handleInputChange} placeholder="Enter your email" />
+              </div>
+              <div className="info-field">
+                <label htmlFor="department">Department</label>
+                <Input id="department" name="department" value={editForm.department} onChange={handleInputChange} placeholder="e.g., Computer Science" />
+              </div>
+              <div className="info-field">
+                <label htmlFor="institution">Institution</label>
+                <Input id="institution" name="institution" value={editForm.institution} onChange={handleInputChange} placeholder="e.g., Dibrugarh University" />
+              </div>
+            </div>
+            <div className="edit-button-container gap-3">
+              <Button variant="outline" onClick={() => { setIsEditing(false); setEditForm(teacherInfo || initialTeacherInfo);}} className="border-muted text-muted-foreground hover:border-foreground">
+                Cancel
+              </Button>
+              <Button type="submit" className="btn-glow-primary" disabled={saveProfileMutation.isPending}>
+                {saveProfileMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save size={16} className="mr-2" />}
+                Save Changes
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+            <div className="info-field">
+              <label>Department</label>
+              <p className="value flex items-center gap-2">
+                <BookUser size={18} className="opacity-60" />
+                {displayInfo.department || <span className="italic text-muted-foreground/70">Not Set</span>}
+              </p>
+            </div>
+            <div className="info-field">
+              <label>Institution</label>
+              <p className="value flex items-center gap-2">
+                <Building size={18} className="opacity-60" />
+                {displayInfo.institution || <span className="italic text-muted-foreground/70">Not Set</span>}
+              </p>
+            </div>
+            {/* Add more read-only fields here if needed */}
+          </div>
+        )}
+      </div>
+    </>
   );
 };
 
 export default TeacherInfo;
-
-

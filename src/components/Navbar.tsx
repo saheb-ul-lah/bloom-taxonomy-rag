@@ -1,8 +1,7 @@
-// src/components/Navbar.jsx
-import React from 'react';
+import React, { useContext } from 'react'; // Added useContext
 import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { 
+import {
   NavigationMenu,
   NavigationMenuContent,
   NavigationMenuItem,
@@ -11,140 +10,220 @@ import {
   NavigationMenuTrigger,
   navigationMenuTriggerStyle
 } from "@/components/ui/navigation-menu";
-import { Menu } from "lucide-react";
-import { useAuth } from '@clerk/clerk-react'; // MODIFIED: Import useAuth
-import UserDropdown from '@/components/UserDropdown'; // MODIFIED: Import UserDropdown
+import { Menu, Sun, Moon, LogIn, UserPlus, LayoutDashboard, Home, Sparkles } from "lucide-react"; // Added more icons
+import { useAuth } from '@clerk/clerk-react';
+import UserDropdown from '@/components/UserDropdown';
+import { ThemeContext } from '@/App'; // Import ThemeContext
+
+// Component-specific styles
+const NavbarStyles = () => (
+  <style>{`
+    .navbar-link {
+      font-family: var(--font-sans); /* Poppins */
+      position: relative;
+      transition: color 0.3s ease;
+      padding: 0.5rem 0.75rem;
+    }
+    .navbar-link::after {
+      content: '';
+      position: absolute;
+      width: 0;
+      height: 2px;
+      bottom: -2px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: hsl(var(--primary));
+      transition: width 0.3s ease;
+    }
+    .navbar-link:hover::after,
+    .navbar-link-active::after { /* For active state if needed */
+      width: 70%;
+    }
+    .navbar-link:hover {
+      color: hsl(var(--primary));
+    }
+
+    .nav-menu-content {
+      background-color: hsl(var(--popover)) !important;
+      border-color: hsl(var(--border)) !important;
+      box-shadow: var(--shadow-medium);
+    }
+    .nav-menu-content .nav-menu-item-link {
+      color: hsl(var(--foreground));
+      background-color: transparent;
+    }
+    .nav-menu-content .nav-menu-item-link:hover {
+      background-color: hsl(var(--accent) / 0.1) !important;
+      color: hsl(var(--primary));
+    }
+    .nav-menu-content .nav-menu-item-title {
+      color: hsl(var(--foreground));
+      font-weight: 500;
+    }
+    .nav-menu-content .nav-menu-item-description {
+      color: hsl(var(--muted-foreground));
+    }
+    .nav-menu-highlight-link { /* For the featured link in dropdown */
+      background-image: linear-gradient(to right, hsl(var(--gradient-start)/0.8), hsl(var(--gradient-end)/0.8));
+    }
+    .dark .nav-menu-highlight-link {
+      background-image: linear-gradient(to right, hsl(var(--gradient-start)/0.6), hsl(var(--gradient-end)/0.6));
+    }
+    .nav-menu-highlight-link .nav-menu-item-title,
+    .nav-menu-highlight-link .nav-menu-item-description {
+      color: hsl(var(--primary-foreground)) !important; /* Ensure text is readable on gradient */
+    }
+  `}</style>
+);
+
 
 const Navbar = () => {
   const navigate = useNavigate();
-  const { isSignedIn } = useAuth(); // MODIFIED: Get authentication status
+  const { isSignedIn } = useAuth();
+  const { theme, toggleTheme } = useContext(ThemeContext); // Use theme context
 
   return (
-    <header className="py-4 px-6 glass-morphism backdrop-blur-lg border-b border-white/10 sticky top-0 z-50 flex justify-between items-center">
-      <div className="flex items-center gap-2">
-        <div className="flex flex-col">
-          <h1 
-            className="text-2xl font-bold bg-gradient-to-r from-white to-yellow-300 bg-clip-text text-transparent animate-fade-in cursor-pointer" 
-            onClick={() => navigate('/')}
-          >
-            QuestionGenius
-          </h1>
-          <span className="text-xs text-white/80">Dibrugarh University</span>
-        </div>
-        
-        <div className="hidden md:block ml-6">
-          <NavigationMenu>
-            <NavigationMenuList>
-              <NavigationMenuItem>
-                <NavigationMenuTrigger className="bg-transparent text-white hover:bg-white/10">Features</NavigationMenuTrigger>
-                <NavigationMenuContent className="glass-morphism">
-                  {/* ... (content unchanged) ... */}
-                  <ul className="grid w-[400px] gap-3 p-4 md:w-[500px] md:grid-cols-2 lg:w-[600px]">
-                    <li className="row-span-3">
-                      <NavigationMenuLink asChild>
-                        <a
-                          className="flex h-full w-full select-none flex-col justify-end rounded-md bg-gradient-to-b from-theme-secondary/50 to-theme-tertiary/50 p-6 no-underline outline-none focus:shadow-md"
-                          href="#"
-                        >
-                          <div className="mb-2 mt-4 text-lg font-medium text-white">
-                            QuestionGenius AI
-                          </div>
-                          <p className="text-sm leading-tight text-white/70">
-                            Our AI-powered platform generates perfect question papers tailored to your needs
-                          </p>
-                        </a>
-                      </NavigationMenuLink>
-                    </li>
-                    <li>
-                      <NavigationMenuLink asChild>
-                        <a
-                          className="block select-none space-y-1 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-white/10 hover:text-white focus:bg-white/10 focus:text-white"
-                          href="#"
-                        >
-                          <div className="text-sm font-medium leading-none text-white">Multiple Choice</div>
-                          <p className="line-clamp-2 text-sm leading-snug text-white/70">
-                            Generate objective questions with perfect distribution
-                          </p>
-                        </a>
-                      </NavigationMenuLink>
-                    </li>
-                    <li>
-                      <NavigationMenuLink asChild>
-                        <a
-                          className="block select-none space-y-1 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-white/10 hover:text-white focus:bg-white/10 focus:text-white"
-                          href="#"
-                        >
-                          <div className="text-sm font-medium leading-none text-white">Custom Subjects</div>
-                          <p className="line-clamp-2 text-sm leading-snug text-white/70">
-                            Questions for any subject from Physics to Computer Science
-                          </p>
-                        </a>
-                      </NavigationMenuLink>
-                    </li>
-                    <li>
-                      <NavigationMenuLink asChild>
-                        <a
-                          className="block select-none space-y-1 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-white/10 hover:text-white focus:bg-white/10 focus:text-white"
-                          href="#"
-                        >
-                          <div className="text-sm font-medium leading-none text-white">Smart Distribution</div>
-                          <p className="line-clamp-2 text-sm leading-snug text-white/70">
-                            Set your preferred marks distribution across question types
-                          </p>
-                        </a>
-                      </NavigationMenuLink>
-                    </li>
-                  </ul>
-                </NavigationMenuContent>
-              </NavigationMenuItem>
-              <NavigationMenuItem>
-                <NavigationMenuLink className={`${navigationMenuTriggerStyle()} bg-transparent text-white hover:bg-white/10`} href="#">
-                  Pricing
-                </NavigationMenuLink>
-              </NavigationMenuItem>
-              {isSignedIn && ( // MODIFIED: Only show Dashboard if signed in
+    <>
+      <NavbarStyles />
+      <header className="py-3 px-4 md:px-6 sticky top-0 z-50 w-full glass-pane animate-fade-in-down"
+              style={{ animationDuration: '0.7s' }}>
+        <div className="container mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center gap-2 cursor-pointer group"
+              onClick={() => navigate('/')}
+            >
+              <Sparkles className="h-7 w-7 text-primary transition-transform duration-300 group-hover:rotate-[360deg] group-hover:scale-110" />
+              <h1 className="text-2xl md:text-3xl font-heading font-extrabold text-gradient-animated">
+                QuestionGenius
+              </h1>
+            </div>
+            {/* <span className="text-xs text-muted-foreground hidden sm:block">by Dibrugarh University</span> */}
+          </div>
+
+          <div className="hidden md:flex items-center gap-1">
+            <NavigationMenu>
+              <NavigationMenuList>
                 <NavigationMenuItem>
-                  <NavigationMenuLink 
-                    className={`${navigationMenuTriggerStyle()} bg-transparent text-white hover:bg-white/10`} 
-                    onClick={() => navigate('/dashboard')}
-                    style={{ cursor: 'pointer' }}
+                  <NavigationMenuLink
+                    href="#" // Replace with actual path or onClick
+                    className={`${navigationMenuTriggerStyle()} navbar-link bg-transparent hover:bg-transparent focus:bg-transparent text-foreground`}
                   >
-                    Dashboard
+                    Features
                   </NavigationMenuLink>
                 </NavigationMenuItem>
-              )}
-            </NavigationMenuList>
-          </NavigationMenu>
-        </div>
-      </div>
+                <NavigationMenuItem>
+                  <NavigationMenuLink
+                    href="#" // Replace with actual path or onClick
+                    className={`${navigationMenuTriggerStyle()} navbar-link bg-transparent hover:bg-transparent focus:bg-transparent text-foreground`}
+                  >
+                    Pricing
+                  </NavigationMenuLink>
+                </NavigationMenuItem>
 
-      <div className="flex items-center gap-4">
-        {isSignedIn ? ( // MODIFIED: Show UserDropdown if signed in
-          <UserDropdown />
-        ) : (
-          <>
-            <Button 
-              variant="outline" 
-              className="hidden md:flex text-white border-white hover:bg-white/20 animate-fade-in transition-all duration-300" 
-              onClick={() => navigate('/sign-in')} // MODIFIED: Navigate to /sign-in
+                {/* Example of a dropdown - keep if useful, or remove if only direct links */}
+                <NavigationMenuItem>
+                  <NavigationMenuTrigger className={`${navigationMenuTriggerStyle()} navbar-link bg-transparent hover:bg-transparent focus:bg-transparent text-foreground`}>
+                    Resources
+                  </NavigationMenuTrigger>
+                  <NavigationMenuContent className="nav-menu-content">
+                    <ul className="grid w-[300px] gap-3 p-4 md:w-[400px] lg:w-[500px] md:grid-cols-2">
+                      <ListItem href="/docs" title="Documentation" className="nav-menu-item-link">
+                        <span className="nav-menu-item-description">Comprehensive guides and API specs.</span>
+                      </ListItem>
+                      <ListItem href="/blog" title="Blog" className="nav-menu-item-link">
+                        <span className="nav-menu-item-description">Latest articles and insights.</span>
+                      </ListItem>
+                      <ListItem href="/faq" title="FAQ" className="nav-menu-item-link">
+                       <span className="nav-menu-item-description">Answers to common questions.</span>
+                      </ListItem>
+                      <ListItem href="/support" title="Support" className="nav-menu-item-link">
+                        <span className="nav-menu-item-description">Get help from our team.</span>
+                      </ListItem>
+                    </ul>
+                  </NavigationMenuContent>
+                </NavigationMenuItem>
+
+                {isSignedIn && (
+                  <NavigationMenuItem>
+                    <NavigationMenuLink
+                      onClick={() => navigate('/dashboard')}
+                      className={`${navigationMenuTriggerStyle()} navbar-link bg-transparent hover:bg-transparent focus:bg-transparent text-foreground cursor-pointer`}
+                    >
+                      Dashboard
+                    </NavigationMenuLink>
+                  </NavigationMenuItem>
+                )}
+              </NavigationMenuList>
+            </NavigationMenu>
+          </div>
+
+          <div className="flex items-center gap-2 md:gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              className="text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-full transition-all"
+              aria-label="Toggle theme"
             >
-              Login
+              {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
-            <Button 
-              className="hidden md:flex bg-gradient-to-r from-yellow-300 to-yellow-500 text-black hover:bg-yellow-400 animate-fade-in transition-all duration-300" 
-              onClick={() => navigate('/sign-up')} // MODIFIED: Navigate to /sign-up
-            >
-              Get Started
+
+            {isSignedIn ? (
+              <UserDropdown />
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  className="hidden md:flex items-center gap-2 border-primary/50 text-primary hover:bg-primary/10 hover:text-primary hover:border-primary rounded-lg transition-all duration-300 group"
+                  onClick={() => navigate('/sign-in')}
+                >
+                  <LogIn className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1" />
+                  Login
+                </Button>
+                <Button
+                  className="hidden md:flex items-center gap-2 bg-gradient-to-r from-primary to-tertiary text-primary-foreground hover:opacity-90 shadow-soft hover:shadow-medium rounded-lg transition-all duration-300 group btn-glow-primary"
+                  onClick={() => navigate('/sign-up')}
+                >
+                  Get Started
+                  <UserPlus className="h-4 w-4 transition-transform duration-300 group-hover:scale-110" />
+                </Button>
+              </>
+            )}
+
+            <Button variant="ghost" size="icon" className="md:hidden text-foreground hover:bg-muted/50">
+              <Menu className="h-6 w-6"/> {/* TODO: Implement mobile menu toggle and links */}
             </Button>
-          </>
-        )}
-        
-        <Button variant="ghost" size="icon" className="md:hidden text-white hover:bg-white/10">
-          <Menu /> {/* TODO: Implement mobile menu toggle and links */}
-        </Button>
-      </div>
-    </header>
+          </div>
+        </div>
+      </header>
+    </>
   );
 };
+
+// Helper component for NavigationMenu items (if using complex dropdowns)
+const ListItem = React.forwardRef<
+  React.ElementRef<"a">,
+  React.ComponentPropsWithoutRef<"a"> & { title: string }
+>(({ className, title, children, ...props }, ref) => {
+  return (
+    <li>
+      <NavigationMenuLink asChild>
+        <a
+          ref={ref}
+          className={`block select-none space-y-1 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-accent/10 focus:bg-accent/10 ${className}`}
+          {...props}
+        >
+          <div className="text-sm font-medium leading-none nav-menu-item-title">{title}</div>
+          <p className="line-clamp-2 text-sm leading-snug nav-menu-item-description">
+            {children}
+          </p>
+        </a>
+      </NavigationMenuLink>
+    </li>
+  )
+})
+ListItem.displayName = "ListItem"
+
 
 export default Navbar;

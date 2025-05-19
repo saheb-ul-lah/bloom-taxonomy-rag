@@ -1,3 +1,3 @@
 git add .
-git commit -m "Tailwind config fixes & ESM imports for plugins"
+git commit -m "Fixes in the components of landing page"
 git push origin main

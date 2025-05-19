@@ -35,9 +35,9 @@ const UserDropdown = () => {
             {user?.fullName || user?.primaryEmailAddress?.emailAddress || 'My Account'} {/* MODIFIED */}
         </DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-gray-700"/>
-        <DropdownMenuItem className="cursor-pointer hover:bg-gray-700" onClick={() => navigate('/dashboard')}>Profile / Dashboard</DropdownMenuItem> {/* MODIFIED */}
+        <DropdownMenuItem className="cursor-pointer hover:bg-gray-700" onClick={() => navigate('/dashboard')}>Dashboard</DropdownMenuItem> {/* MODIFIED */}
         {/* Add other items like Settings if needed */}
-        {/* <DropdownMenuItem className="cursor-pointer hover:bg-gray-700">Settings</DropdownMenuItem> */}
+        <DropdownMenuItem className="cursor-pointer hover:bg-gray-700" onClick={() => navigate('/chat')}>Chat</DropdownMenuItem>
         <DropdownMenuSeparator className="bg-gray-700"/>
         <DropdownMenuItem 
             className="cursor-pointer text-red-400 hover:bg-red-700/50 hover:text-red-300"  // MODIFIED: Style consistency
