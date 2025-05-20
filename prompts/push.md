@@ -1,3 +1,3 @@
 git add .
-git commit -m "Fixes in the components of landing page"
-git push origin main
+git commit -m "Fixes in context menu"
+git push origin master

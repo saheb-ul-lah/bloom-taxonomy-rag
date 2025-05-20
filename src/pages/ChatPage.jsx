@@ -369,7 +369,7 @@ const ChatPage = () => {
       preferences: currentChatPreferences,
       customPromptText: customAIPrompt,
       chatHistoryId: currentChatId,
-      activeContextItemIds: activeContextItems.map(item => item.id), // Send IDs of pinned RAG items
+      activeContextItems: activeContextItems, // Send the array of {id, name, type} objects
       // oneTimeFile: selectedFileForUpload (backend needs to handle this if sent directly)
     };
 

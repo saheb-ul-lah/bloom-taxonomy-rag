@@ -668,34 +668,53 @@ apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
     const usedSourceDetails = [];
 
     if (activeContextItemIds && activeContextItemIds.length > 0) {
-      console.log("  Processing RAG context for items:", activeContextItemIds.map(item => `${item.type}:${item.id}`));
-      const contextFetchPromises = activeContextItemIds.map(async (itemInfo) => {
-        if (itemInfo.type === 'document') {
-          const docFile = await prisma.uploadedFile.findFirst({
-            where: { id: itemInfo.id, uploadedById: user.id },
-          });
-          if (docFile && docFile.fileUrl && docFile.isVectorized) {
-            const filePathOnServer = path.isAbsolute(docFile.fileUrl) ? docFile.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
-            try {
-                const content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
-                if (content) {
-                    usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
-                    return `CONTEXT SOURCE (Document: ${docFile.fileName}):\n${content}\nEND CONTEXT SOURCE (Document: ${docFile.fileName})\n\n`;
-                }
-            } catch (err) { console.warn(`RAG: Error loading document ${docFile.fileName}:`, err.message); }
-          }
-        } else if (itemInfo.type === 'note') {
-          const note = await prisma.note.findFirst({ where: { id: itemInfo.id, userId: user.id } });
-          if (note && note.content) {
-            // TODO: Check note.isVectorized if implementing separate vectorization for notes
-            usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
-            return `CONTEXT SOURCE (Note: ${note.title}):\n${note.content}\nEND CONTEXT SOURCE (Note: ${note.title})\n\n`;
-          }
+    console.log("  Processing RAG context for item IDs:", activeContextItemIds);
+    const contextFetchPromises = activeContextItemIds.map(async (itemId) => {
+        // Try to find it as a document
+        let docFile = await prisma.uploadedFile.findFirst({
+            where: { id: itemId, uploadedById: user.id },
+        });
+        if (docFile) {
+            console.log(`RAG: Found docFile for ID ${itemId}:`, {id: docFile.id, fileName: docFile.fileName, isVectorized: docFile.isVectorized, fileUrl: docFile.fileUrl});
+            if (docFile.fileUrl && docFile.isVectorized) {
+                const filePathOnServer = path.isAbsolute(docFile.fileUrl) 
+                                           ? docFile.fileUrl 
+                                           : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
+                console.log(`RAG: Attempting to load document content from: ${filePathOnServer}`);
+                try {
+                    const content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
+                    if (content) {
+                        usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
+                        return `CONTEXT SOURCE (Document: ${docFile.fileName}):\n${content}\nEND CONTEXT SOURCE (Document: ${docFile.fileName})\n\n`;
+                    } else { console.warn(`RAG: loadFileContentForRAG returned null/empty for ${docFile.fileName}`); }
+                } catch (err) { console.warn(`RAG: Error in loadFileContentForRAG for ${docFile.fileName}:`, err.message); }
+            } else {
+                console.warn(`RAG: Document ${docFile.fileName} (ID: ${itemId}) not used. Has URL: ${!!docFile.fileUrl}, Is Vectorized: ${!!docFile.isVectorized}`);
+            }
+            return null; // Processed as doc, even if not used.
         }
+
+        // If not a document, try to find it as a note
+        let note = await prisma.note.findFirst({
+            where: { id: itemId, userId: user.id },
+        });
+        if (note) {
+            console.log(`RAG: Found note for ID ${itemId}:`, {id: note.id, title: note.title, hasContent: !!note.content});
+            if (note.content) {
+                // TODO: Check note.isVectorized if you implement vectorization for notes
+                usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
+                return `CONTEXT SOURCE (Note: ${note.title}):\n${note.content}\nEND CONTEXT SOURCE (Note: ${note.title})\n\n`;
+            } else {
+                console.warn(`RAG: Note ${note.title} (ID: ${itemId}) has no content.`);
+            }
+            return null; // Processed as note
+        }
+        
+        console.warn(`RAG: Context Item ID ${itemId} not found as document or note for user ${user.id}`);
         return null;
-      });
-      const resolvedContexts = (await Promise.all(contextFetchPromises)).filter(Boolean);
-      ragContextString = resolvedContexts.join("");
+    });
+    const resolvedContexts = (await Promise.all(contextFetchPromises)).filter(Boolean);
+    ragContextString = resolvedContexts.join("");
       if (ragContextString) console.log(`  Assembled RAG Context from ${usedSourceDetails.length} items.`);
       else console.log("  No usable RAG context content found from selected items.");
     }
