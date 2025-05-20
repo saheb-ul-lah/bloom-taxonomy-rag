@@ -120,16 +120,59 @@ model ChatHistory {
   id        String   @id @default(uuid())
   user      User     @relation(fields: [userId], references: [id])
   userId    String
-  class     String
-  subject   String
-  chapter   String
-  messages  Json // [{role: "user", content: "..."}, {role: "assistant", content: "..."}]
+
+  // New fields for better organization and context
+  customTitle String?  // User-editable or AI-generated title for the chat session
+                     // e.g., "Bloom's: Photosynthesis MCQs", "UDL Brainstorm: Newton's Laws"
+
+  frameworkId String?  // ID of the primary pedagogical framework used (e.g., "blooms_architect", "dok_navigator")
+                     // This helps categorize and filter histories, and load correct UI/AI logic
+
+  // Storing preferences used during the session
+  // This could be the preferences active when the last significant interaction occurred,
+  // or the initial preferences set for this specific chat session.
+  lastPreferences Json?  // Stores the complex preferences object used (e.g., { blooms_architect: { levels: [...] }, common: { numItems: 5 } })
+
+  // Storing RAG context items that were active/pinned for this session
+  // This could be an array of { id: String, type: String ('document' or 'note'), name: String }
+  activeContextItems Json?
+
+  // Messages: Structure needs to be more detailed to support new features
+  // The `Json` type for messages is flexible, but let's define its expected structure more clearly.
+  // Each message object within the `messages` array should ideally follow this:
+  // {
+  //   role: "user" | "assistant",
+  //   timestamp: DateTime,
+  //   // For User Messages:
+  //   userQuery?: String, // The actual text typed by the user
+  //   userAttachments?: Json, // [{ id: "temp-id", name: "file.pdf", type: "application/pdf" }] (for one-time file with query)
+  //   // For Assistant Messages:
+  //   summaryText?: String, // A brief textual summary of the AI's response
+  //   structuredContent?: Json, // The main complex output (table data, KaTeX strings, activity cards, etc.)
+  //                           // e.g., { type: "table", data: { ... } }
+  //                           // e.g., { type: "katex_block", latex: "..." }
+  //                           // e.g., { type: "activity_list", data: [{...}] }
+  //   usedSources?: Json, // Array of { id: String, name: String, type: String ('document'|'note') } if RAG was used
+  //   aiTaskType?: String, // The specific AI task performed (e.g., "generate_questions", "suggest_activity")
+  //   // Optional:
+  //   rawLLMResponse?: String @db.Text // For debugging, store the raw response from the LLM
+  //   feedback?: Json // { rating: "thumbs_up" | "thumbs_down", comment?: String }
+  // }
+  messages  Json   @db.JsonB // Using JsonB is often better for querying in PostgreSQL
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Additional fields for RAG context
-  usedDocuments      Json? // IDs or references to documents used in responses
-  generatedQuestions Json? // Store generated questions separately if needed
+  // Deprecating old fields or re-purposing them if they fit the new model
+  // 'class', 'subject', 'chapter' might be better captured within 'lastPreferences' or inferred from content
+  // For now, let's keep them but mark as potentially redundant for new chats if preferences are more detailed.
+  class     String? // Kept for backward compatibility or general categorization
+  subject   String? // Kept for backward compatibility or general categorization
+  chapter   String? // Kept for backward compatibility or general categorization
+
+  // These might be redundant if 'usedSources' in messages is comprehensive
+  // usedDocuments      Json? // Old field
+  // generatedQuestions Json? // Old field - now part of structuredContent in messages
 }
 
 // We no longer need the VectorStore model as vectors are stored directly in Qdrant

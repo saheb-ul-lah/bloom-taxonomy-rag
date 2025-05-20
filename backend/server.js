@@ -6,14 +6,14 @@ import { Webhook } from 'svix';
 import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs/promises';
+import fs from 'fs/promises'; // Using promises version of fs
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
 // LangChain and AI imports
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { DocxLoader } from "@langchain/community/document_loaders/fs/docx";
-import { TextLoader } from "langchain/document_loaders/fs/text";
+import { TextLoader as LangchainTextLoader } from "langchain/document_loaders/fs/text";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { QdrantVectorStore } from "@langchain/community/vectorstores/qdrant";
@@ -29,44 +29,51 @@ const prisma = new PrismaClient();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads/';
+const UPLOAD_DIR_FULL_PATH = path.join(__dirname, UPLOAD_DIR);
+
+const pedagogicalFrameworksConfig = [
+  { id: 'blooms_architect', label: "Bloom's Architect" },
+  { id: 'dok_navigator', label: "DOK Navigator" },
+  { id: 'udl_enhancer', label: "UDL Enhancer" },
+  { id: 'constructivist_spark', label: "Constructivist Spark" },
+  { id: 'combine_conquer', label: "Combine & Conquer" },
+];
+
 // --- Global Middleware ---
-app.use(cors()); // Enable CORS for all routes
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Note: Specific body parsers are applied per route or before the main router
-// to handle Svix webhook raw body requirement correctly.
-
-// --- Request Logging Middleware (runs after body parsing for most routes) ---
+// --- Request Logging Middleware ---
 app.use((req, res, next) => {
   console.log(`\n--- Incoming Request ---`);
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  if (req.query && typeof req.query === 'object' && Object.keys(req.query).length > 0) {
+  if (req.query && Object.keys(req.query).length > 0) {
     console.log("Request Query:", req.query);
   }
-  // For routes NOT using express.raw(), req.body will be parsed if express.json() ran
-  if (req.path !== '/webhook/user' && req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+  if (req.path !== '/webhook/user' && req.body && Object.keys(req.body).length > 0) {
     try {
-      console.log("Request Body (parsed json):", JSON.stringify(req.body, null, 2).substring(0, 500) + "...");
+      console.log("Request Body (parsed):", JSON.stringify(req.body, null, 2).substring(0, 500) + (JSON.stringify(req.body).length > 500 ? "..." : ""));
     } catch (e) {
-      console.log("Request Body: (Could not stringify)");
+      console.log("Request Body: (Could not stringify JSON body)");
     }
   } else if (req.path !== '/webhook/user' && ['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())) {
-    console.log(`Request Body for ${req.method} ${req.path}: (empty or not parsed as object by global express.json)`);
+    console.log(`Request Body for ${req.method} ${req.path}: (empty or not parsed as JSON object)`);
   }
   console.log("--- End Incoming Request ---");
   next();
 });
 
-
 // --- File Upload Setup ---
-const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads/';
 const ensureUploadDirExists = async () => {
-  try { await fs.mkdir(path.join(__dirname, UPLOAD_DIR), { recursive: true }); console.log(`Upload dir '${UPLOAD_DIR}' ensured.`); }
-  catch (error) { console.error(`Error creating upload dir '${UPLOAD_DIR}':`, error); }
+  try { await fs.mkdir(UPLOAD_DIR_FULL_PATH, { recursive: true }); console.log(`Upload dir '${UPLOAD_DIR_FULL_PATH}' ensured.`); }
+  catch (error) { console.error(`Error creating upload dir '${UPLOAD_DIR_FULL_PATH}':`, error); }
 };
 ensureUploadDirExists();
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, UPLOAD_DIR)),
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR_FULL_PATH),
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const cleanOriginalName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -89,290 +96,298 @@ async function getUserByClerkId(clerkId) {
   try {
     const user = await prisma.user.findUnique({ where: { clerkId } });
     if (!user) { console.warn(`User not found in DB for clerkId: ${clerkId}`); }
-    else { console.log(`User found in DB for clerkId ${clerkId}: User DB ID ${user.id}`); }
     return user;
   } catch (error) { console.error(`DB error fetching user by clerkId ${clerkId}:`, error); return null; }
 }
 
-// --- RAG Ingestion Logic with Extensive Logging ---
+async function loadFileContentForRAG(filePathOnServer, fileType) {
+    console.log(`Attempting to load content from: ${filePathOnServer} (type: ${fileType})`);
+    try {
+        await fs.access(filePathOnServer); // Check if file exists before attempting to load
+        const lowerCaseFileType = fileType.toLowerCase();
+        let documents;
+        if (lowerCaseFileType === 'application/pdf') {
+            const loader = new PDFLoader(filePathOnServer);
+            documents = await loader.load();
+        } else if (lowerCaseFileType.includes('officedocument.wordprocessingml.document') || lowerCaseFileType === 'application/msword') {
+            const loader = new DocxLoader(filePathOnServer);
+            documents = await loader.load();
+        } else if (lowerCaseFileType === 'text/plain') {
+            const loader = new LangchainTextLoader(filePathOnServer);
+            documents = await loader.load();
+        } else {
+            console.warn(`Unsupported file type for RAG content loading: ${fileType} at ${filePathOnServer}`);
+            return null;
+        }
+        return documents.map(doc => doc.pageContent).join("\n\n");
+    } catch (error) {
+        console.error(`Error loading file content from ${filePathOnServer}:`, error);
+        return null;
+    }
+}
 
+// --- RAG Ingestion Logic (processAndVectorizeFile) ---
 async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalUserId) {
   const logPrefix = `[VECTORIZE FileID: ${fileRecord.id}, UserDBID: ${internalUserId}]`;
-  console.log(`${logPrefix} START Processing: ${fileRecord.fileName}`);
-  console.log(`${logPrefix} Expected file at path: ${filePathFromMulter}`);
+  console.log(`${logPrefix} START Processing: ${fileRecord.fileName} at ${filePathFromMulter}`);
 
   let documents = [];
-  const collectionName = `teacher_${internalUserId}_materials`;
-  let qdrantOperationSuccessful = false; // Flag to indicate if Qdrant operation was considered a success
+  const collectionName = `teacher_${internalUserId}_materials`; // User-specific collection
+  let qdrantOperationSuccessful = false;
 
   try {
-    // 1. Verify File Access
-    try {
-      await fs.access(filePathFromMulter);
-      console.log(`${logPrefix} File system access VERIFIED for: ${filePathFromMulter}`);
-    } catch (accessError) {
-      console.error(`${logPrefix} ERROR: File not accessible at ${filePathFromMulter} for record ${fileRecord.id}:`, accessError.message);
-      await prisma.uploadedFile.update({
-        where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: false, notes: `File not found at path for vectorization: ${filePathFromMulter}` },
-      });
-      return; // Exit early
-    }
+    await fs.access(filePathFromMulter);
+    console.log(`${logPrefix} File system access VERIFIED for: ${filePathFromMulter}`);
 
-    // 2. Load Documents (PDF, DOCX, TXT)
     const lowerCaseFileType = fileRecord.fileType.toLowerCase();
-    console.log(`${logPrefix} Determined file type: ${lowerCaseFileType}`);
-    if (lowerCaseFileType === 'application/pdf') { /* ... PDFLoader ... */ }
-    // ... (Full loader logic as in your provided code)
-    // Ensure this section correctly populates `documents` or returns if error/unsupported
-    // For brevity, I'm assuming your existing loader logic is in place here.
-    // Example for PDF:
-    else if (lowerCaseFileType === 'application/pdf') {
-      console.log(`${logPrefix} Using PDFLoader.`);
+    if (lowerCaseFileType === 'application/pdf') {
       const loader = new PDFLoader(filePathFromMulter); documents = await loader.load();
     } else if (lowerCaseFileType.includes('officedocument.wordprocessingml.document') || lowerCaseFileType === 'application/msword') {
-      console.log(`${logPrefix} Using DocxLoader.`);
       const loader = new DocxLoader(filePathFromMulter); documents = await loader.load();
     } else if (lowerCaseFileType === 'text/plain') {
-      console.log(`${logPrefix} Using TextLoader.`);
-      const loader = new TextLoader(filePathFromMulter); documents = await loader.load();
+      const loader = new LangchainTextLoader(filePathFromMulter); documents = await loader.load();
     } else {
       console.warn(`${logPrefix} Unsupported file type: ${fileRecord.fileType}`);
-      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: `Unsupported: ${fileRecord.fileType}` } });
+      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: `Unsupported file type: ${fileRecord.fileType}` } });
       return;
     }
 
-    if (!documents || documents.length === 0) { /* ... handle no content ... */ return; }
-    console.log(`${logPrefix} Loaded ${documents.length} raw document(s)/page(s).`);
+    if (!documents || documents.length === 0) {
+      console.warn(`${logPrefix} No content loaded from file: ${fileRecord.fileName}`);
+      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: 'File loaded but no content found.' } });
+      return;
+    }
+    console.log(`${logPrefix} Loaded ${documents.length} raw document sections.`);
 
-    // 3. Split Documents
     const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200, addStartIndex: true });
     const splitDocs = await textSplitter.splitDocuments(documents);
-    console.log(`${logPrefix} Split into ${splitDocs.length} chunks.`);
-    if (splitDocs.length === 0) { /* ... handle no chunks ... */ return; }
 
-    // 4. Add Metadata to Chunks
-    const chunksWithMetadata = splitDocs.map((doc, index) => ({ /* ... as in your provided code ... */
+    if (splitDocs.length === 0) {
+      console.warn(`${logPrefix} No chunks generated after splitting: ${fileRecord.fileName}`);
+      await prisma.uploadedFile.update({ where: { id: fileRecord.id }, data: { processed: true, isVectorized: false, notes: 'File split but no text chunks generated.' } });
+      return;
+    }
+    console.log(`${logPrefix} Split into ${splitDocs.length} chunks.`);
+
+    const chunksWithMetadata = splitDocs.map((doc, index) => ({
       ...doc,
       metadata: {
-        ...doc.metadata, source_filename: fileRecord.fileName, file_id_db: fileRecord.id, user_id_db: internalUserId,
-        subject: fileRecord.subject || 'general', class_level: fileRecord.classLevel || 'general',
-        chapter: fileRecord.chapter || 'general', category: fileRecord.category || 'general_upload',
-        year: fileRecord.year?.toString() || undefined, exam_type: fileRecord.examType || undefined,
-        doc_type: 'uploaded_file', chunk_index: index,
+        ...doc.metadata, 
+        source_filename: fileRecord.fileName, 
+        file_id_db: fileRecord.id, 
+        user_id_db: internalUserId, // Internal DB user ID
+        subject: fileRecord.subject || 'general', 
+        class_level: fileRecord.classLevel || 'general',
+        chapter: fileRecord.chapter || 'general', 
+        category: fileRecord.category || 'general_upload',
+        year: fileRecord.year?.toString() || undefined, 
+        exam_type: fileRecord.examType || undefined,
+        doc_type: 'uploaded_file', // Differentiate from 'note' type if you vectorize notes
+        chunk_index: index,
       }
     }));
-    console.log(`${logPrefix} Enriched ${chunksWithMetadata.length} chunks with metadata.`);
-    if (chunksWithMetadata.length > 0) console.log(`${logPrefix} Sample enriched chunk metadata:`, chunksWithMetadata[0].metadata);
+    
+    console.log(`${logPrefix} Metadata added to ${chunksWithMetadata.length} chunks.`);
 
-
-    // 5. Ensure Qdrant Collection Exists
-    console.log(`${logPrefix} Checking/Creating Qdrant collection: ${collectionName}`);
-    try { /* ... Qdrant getCollection/createCollection logic as in your provided code ... */
+    // Ensure Qdrant collection exists
+    try {
       await qdrantClient.getCollection(collectionName);
       console.log(`${logPrefix} Qdrant collection '${collectionName}' already exists.`);
     } catch (error) {
       const qdrantError = error;
-      if (qdrantError.status === 404 || (qdrantError.code && qdrantError.code === 5)) {
+      if (qdrantError.status === 404 || (qdrantError.code && qdrantError.code === 5)) { // Qdrant's typical "not found" status/code
         console.log(`${logPrefix} Qdrant collection '${collectionName}' not found, creating...`);
-        await qdrantClient.createCollection(collectionName, { vectors: { size: 768, distance: 'Cosine' } });
+        await qdrantClient.createCollection(collectionName, { 
+            vectors: { size: 768, distance: 'Cosine' } // Match GoogleGenerativeAIEmbeddings size
+        });
         console.log(`${logPrefix} Qdrant collection '${collectionName}' created.`);
-      } else { console.error(`${logPrefix} Error checking/creating Qdrant collection '${collectionName}':`, qdrantError); throw qdrantError; }
-    }
-
-    // 6. Add Documents to Qdrant
-    console.log(`${logPrefix} Initializing QdrantVectorStore for collection: ${collectionName}`);
-    const qdrantStore = new QdrantVectorStore(embeddings, { client: qdrantClient, collectionName });
-
-    console.log(`${logPrefix} Attempting to add ${chunksWithMetadata.length} document chunks to Qdrant...`);
-    let addedIdsFromStore;
-    try {
-      // The addDocuments method in LangChain's QdrantVectorStore might return void on success,
-      // or an array of IDs. It should throw an error on failure.
-      addedIdsFromStore = await qdrantStore.addDocuments(chunksWithMetadata);
-      console.log(`${logPrefix} Raw result from qdrantStore.addDocuments:`, addedIdsFromStore);
-
-      // If no error was thrown, assume the operation was accepted by Qdrant.
-      // The actual check of whether points exist would require querying Qdrant.
-      qdrantOperationSuccessful = true;
-
-    } catch (qdrantAddError) {
-      console.error(`${logPrefix} ERROR explicitly caught during qdrantStore.addDocuments:`, qdrantAddError);
-      await prisma.uploadedFile.update({
-        where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: false, notes: `Qdrant addDocuments error: ${String(qdrantAddError.message || qdrantAddError).substring(0, 200)}` },
-      });
-      throw qdrantAddError; // Propagate to the main catch block
-    }
-
-    // 7. Update Prisma Record based on Qdrant operation outcome
-    if (qdrantOperationSuccessful) {
-      // Check if addedIdsFromStore is an array and has content; otherwise, store null for qdrantIds
-      const finalQdrantIds = (Array.isArray(addedIdsFromStore) && addedIdsFromStore.length > 0) ? addedIdsFromStore : null;
-      const successNote = finalQdrantIds ? 'Successfully vectorized.' : 'Vectorized (Qdrant IDs not returned by lib, but op presumed success).';
-
-      if (finalQdrantIds) {
-        console.log(`${logPrefix} Added ${finalQdrantIds.length} vectors to Qdrant. Sample Qdrant IDs:`, finalQdrantIds.slice(0, 3));
-      } else {
-        console.warn(`${logPrefix} qdrantStore.addDocuments returned ${addedIdsFromStore}. Storing null for qdrantIds.`);
+      } else { 
+        console.error(`${logPrefix} Error checking/creating Qdrant collection '${collectionName}':`, qdrantError);
+        throw qdrantError; // Propagate other Qdrant errors
       }
-
-      await prisma.uploadedFile.update({
-        where: { id: fileRecord.id },
-        data: {
-          processed: true,
-          isVectorized: true, // Mark as vectorized if addDocuments didn't throw
-          qdrantIds: finalQdrantIds,
-          qdrantCollection: collectionName,
-          notes: successNote
-        },
-      });
-      console.log(`${logPrefix} SUCCESS: File processing marked as complete in DB.`);
-    } else {
-      // This 'else' would typically only be hit if addDocuments didn't throw but also didn't result in qdrantOperationSuccessful = true
-      // (which our current logic doesn't allow, as we assume success if no throw).
-      // Kept for logical completeness if future checks are added.
-      console.error(`${logPrefix} ERROR: Qdrant addDocuments did not confirm success clearly.`);
-      await prisma.uploadedFile.update({
-        where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: false, notes: 'Qdrant addDocuments result unclear or failed without explicit error.' },
-      });
     }
 
-  } catch (error) { // Catches errors from any step within the main try block
-    console.error(`${logPrefix} OVERALL ERROR during vectorization pipeline:`, error);
-    // Ensure record is updated to reflect failure if not already done in a more specific catch
-    const existingRecord = await prisma.uploadedFile.findUnique({ where: { id: fileRecord.id } });
-    if (existingRecord && !existingRecord.isVectorized) { // Only update if not already marked as successfully vectorized
-      await prisma.uploadedFile.update({
-        where: { id: fileRecord.id },
-        data: { processed: true, isVectorized: false, notes: `Vectorization pipeline error: ${String(error.message || error).substring(0, 250)}` },
-      }).catch(dbErr => console.error(`${logPrefix} DB update error on main failure:`, dbErr));
+    // Add documents to Qdrant
+    const qdrantStore = new QdrantVectorStore(embeddings, { client: qdrantClient, collectionName });
+    console.log(`${logPrefix} Attempting to add ${chunksWithMetadata.length} document chunks to Qdrant...`);
+    const addedIdsFromStore = await qdrantStore.addDocuments(chunksWithMetadata);
+    qdrantOperationSuccessful = true; 
+    console.log(`${logPrefix} Documents added to Qdrant. Response (IDs):`, addedIdsFromStore);
+
+
+    const finalQdrantIds = (Array.isArray(addedIdsFromStore) && addedIdsFromStore.length > 0) ? addedIdsFromStore : null;
+    const successNote = finalQdrantIds ? 'Successfully vectorized and stored.' : 'Vectorized (Qdrant IDs not returned by lib, but op presumed success).';
+
+    await prisma.uploadedFile.update({
+      where: { id: fileRecord.id },
+      data: { 
+        processed: true, 
+        isVectorized: true, 
+        qdrantIds: finalQdrantIds, // Store the Qdrant point IDs if returned
+        qdrantCollection: collectionName,
+        notes: successNote 
+      },
+    });
+    console.log(`${logPrefix} SUCCESS: File processing marked as complete in DB for ${fileRecord.fileName}.`);
+
+  } catch (error) {
+    console.error(`${logPrefix} OVERALL ERROR during vectorization pipeline for ${fileRecord.fileName}:`, error);
+    try {
+        const existingRecord = await prisma.uploadedFile.findUnique({ where: { id: fileRecord.id } });
+        if (existingRecord && !existingRecord.isVectorized) { // Only update if not already marked successful
+            await prisma.uploadedFile.update({
+                where: { id: fileRecord.id },
+                data: { processed: true, isVectorized: false, notes: `Vectorization pipeline error: ${String(error.message || error).substring(0, 250)}` },
+            });
+        }
+    } catch (dbUpdateError) {
+        console.error(`${logPrefix} FATAL: Could not update DB record on vectorization error:`, dbUpdateError);
     }
   } finally {
-    // Cleanup temporary file
     try {
-      await fs.access(filePathFromMulter);
+      await fs.access(filePathFromMulter); // Check if it still exists
       await fs.unlink(filePathFromMulter);
       console.log(`${logPrefix} CLEANUP: Deleted temporary file: ${filePathFromMulter}`);
     } catch (unlinkError) {
-      if (unlinkError.code !== 'ENOENT') {
+      if (unlinkError.code !== 'ENOENT') { 
         console.warn(`${logPrefix} CLEANUP WARNING during unlink of ${filePathFromMulter}:`, unlinkError.message);
-      } else {
-        console.log(`${logPrefix} CLEANUP: Temporary file ${filePathFromMulter} was already gone.`);
       }
     }
   }
 }
 
+
 // --- CLERK WEBHOOK HANDLER ---
-// Defined directly on app, with express.raw() for this specific route
 app.post("/webhook/user", express.raw({ type: 'application/json' }), async (req, res) => {
-  console.log("--- Webhook /webhook/user hit ---");
-  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-  if (!WEBHOOK_SECRET) { console.error("CRITICAL: Missing WEBHOOK_SECRET"); return res.status(500).send("Server misconfig: WEBHOOK_SECRET"); }
+    console.log("--- Webhook /webhook/user hit ---");
+    const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+    if (!WEBHOOK_SECRET) { console.error("CRITICAL: Missing WEBHOOK_SECRET from .env file!"); return res.status(500).send("Server misconfig: WEBHOOK_SECRET not configured."); }
 
-  const svix_id = req.headers["svix-id"], svix_timestamp = req.headers["svix-timestamp"], svix_signature = req.headers["svix-signature"];
-  if (!svix_id || !svix_timestamp || !svix_signature) { console.error("Webhook Error: Missing Svix headers."); return res.status(400).send("Missing Svix headers"); }
+    const svix_id = req.headers["svix-id"], svix_timestamp = req.headers["svix-timestamp"], svix_signature = req.headers["svix-signature"];
+    if (!svix_id || !svix_timestamp || !svix_signature) { console.error("Webhook Error: Missing Svix headers from incoming request."); return res.status(400).send("Missing Svix headers"); }
 
-  const wh = new Webhook(WEBHOOK_SECRET);
-  let evt;
-  try {
-    // req.body is a Buffer here because of express.raw()
-    console.log("Webhook raw body for verification:", req.body.toString('utf8').substring(0, 500) + "...");
-    evt = wh.verify(req.body.toString('utf8'), { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
-    console.log("Webhook verified successfully. Event type:", evt.type);
-  } catch (err) {
-    console.error("!!! Svix verification failed:", err.message);
-    console.error("Headers for verification:", { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
-    return res.status(400).send("Webhook verification failed");
-  }
+    const wh = new Webhook(WEBHOOK_SECRET);
+    let evt;
+    try {
+        const payloadString = req.body.toString('utf8');
+        evt = wh.verify(payloadString, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
+        console.log("Webhook verified successfully. Event type:", evt.type);
+    } catch (err) {
+        console.error("!!! Svix verification failed:", err.message);
+        console.error("WEBHOOK_SECRET used (first 5 chars for check):", WEBHOOK_SECRET.substring(0,5) + "...");
+        return res.status(400).send("Webhook signature verification failed");
+    }
 
-  const eventType = evt.type;
-  const eventData = evt.data;
+    const eventType = evt.type;
+    const eventData = evt.data;
 
-  try {
-    if (eventType === "user.created" || eventType === "user.updated") {
-      const { id: clerkUserId, email_addresses, primary_email_address_id, first_name, last_name } = eventData;
-      const primaryEmailObj = Array.isArray(email_addresses) ? email_addresses.find(e => e.id === primary_email_address_id) : null;
-      const email = primaryEmailObj?.email_address || `no-email-${Date.now()}@example.com`; // Ensure unique fallback
-      const name = [first_name, last_name].filter(Boolean).join(" ") || "Unnamed User";
-      console.log(`Processing ${eventType} for Clerk ID: ${clerkUserId} (Email: ${email})`);
+    try {
+        if (eventType === "user.created" || eventType === "user.updated") {
+            const { id: clerkUserId, email_addresses, primary_email_address_id, first_name, last_name, image_url } = eventData;
+            const primaryEmailObj = Array.isArray(email_addresses) ? email_addresses.find(e => e.id === primary_email_address_id) : null;
+            const email = primaryEmailObj?.email_address || `no-email-${clerkUserId}@example.com`;
+            const name = [first_name, last_name].filter(Boolean).join(" ") || "Unnamed User";
+            
+            console.log(`Webhook: Processing ${eventType} for Clerk ID: ${clerkUserId} (Email: ${email}, Name: ${name})`);
 
-      if (eventType === "user.created") {
-        const existingUser = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
-        if (existingUser) {
-          console.log(`User ${clerkUserId} already exists. Updating.`);
-          await prisma.user.update({ where: { clerkId: clerkUserId }, data: { email, name, department: existingUser.department, institution: existingUser.institution } }); // Preserve existing profile fields
-        } else {
-          await prisma.user.create({ data: { clerkId: clerkUserId, email, name, role: 'TEACHER', department: null, institution: null } });
-          console.log(`✅ User created in DB: ${clerkUserId}`);
-        }
-      } else { // user.updated
-        await prisma.user.upsert({
-          where: { clerkId: clerkUserId },
-          update: { email, name },
-          create: { clerkId: clerkUserId, email, name, role: 'TEACHER', department: null, institution: null },
-        });
-        console.log(`✏️ User updated/ensured in DB: ${clerkUserId}`);
-      }
-    } else if (eventType === "user.deleted") {
-      const { id: clerkUserId, deleted } = eventData;
-      if (deleted && clerkUserId) {
-        console.log(`Processing user.deleted for Clerk ID: ${clerkUserId}`);
-        const userRecord = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
-        if (userRecord) {
-          const collectionName = `teacher_${userRecord.id}_materials`;
-          try {
-            console.log(`Attempting to delete Qdrant collection: ${collectionName}`);
-            await qdrantClient.deleteCollection(collectionName);
-            console.log(`Qdrant collection ${collectionName} deleted for user ${userRecord.id}`);
-          } catch (qError) {
-            if (qError.status !== 404 && !(qError.message && qError.message.includes("doesn't exist"))) { // Qdrant client might throw different error types
-              console.error(`Error deleting Qdrant collection ${collectionName}:`, qError);
-            } else {
-              console.log(`Qdrant collection ${collectionName} not found or error indicates non-existence, skipping deletion.`);
+            const userData = {
+                email,
+                name,
+                // imageUrl: image_url, // You can store this if you have an imageUrl field in your User model
+            };
+
+            if (eventType === "user.created") {
+                const existingUser = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
+                if (existingUser) {
+                    console.log(`Webhook: User ${clerkUserId} already exists. Updating details.`);
+                    await prisma.user.update({ where: { clerkId: clerkUserId }, data: userData });
+                } else {
+                    console.log(`Webhook: Attempting to create user ${clerkUserId} in DB.`);
+                    await prisma.user.create({ data: { clerkId: clerkUserId, ...userData, role: 'TEACHER' } }); // department/institution are optional & nullable
+                    console.log(`✅ Webhook: User created in DB: ${clerkUserId}`);
+                }
+            } else { // user.updated
+                console.log(`Webhook: Attempting to upsert user ${clerkUserId} in DB.`);
+                await prisma.user.upsert({
+                    where: { clerkId: clerkUserId },
+                    update: userData,
+                    create: { clerkId: clerkUserId, ...userData, role: 'TEACHER' },
+                });
+                console.log(`✏️ Webhook: User updated/ensured in DB: ${clerkUserId}`);
             }
-          }
+        } else if (eventType === "user.deleted") {
+             const { id: clerkUserId, deleted } = eventData; // `deleted` boolean might be present
+            if (clerkUserId) { // Check if id exists, even if deleted might be false
+                console.log(`Webhook: Processing user.deleted for Clerk ID: ${clerkUserId}`);
+                const userRecord = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
+                if (userRecord) {
+                    const collectionName = `teacher_${userRecord.id}_materials`;
+                    try {
+                        console.log(`Webhook: Attempting to delete Qdrant collection: ${collectionName}`);
+                        await qdrantClient.deleteCollection(collectionName);
+                        console.log(`Webhook: Qdrant collection ${collectionName} deleted for user ${userRecord.id}`);
+                    } catch (qError) {
+                        if (qError.status !== 404 && !(qError.message && qError.message.includes("doesn't exist"))) {
+                            console.error(`Webhook: Error deleting Qdrant collection ${collectionName}:`, qError);
+                        } else {
+                            console.log(`Webhook: Qdrant collection ${collectionName} not found or indicates non-existence, skipping deletion.`);
+                        }
+                    }
+                    // Cascade delete related records or handle them as per your app's logic
+                    // For example, delete chat history, notes, uploaded files, preferences
+                    await prisma.chatHistory.deleteMany({ where: { userId: userRecord.id } });
+                    await prisma.note.deleteMany({ where: { userId: userRecord.id } });
+                    await prisma.uploadedFile.deleteMany({ where: { uploadedById: userRecord.id } }); // Ensure field name matches
+                    await prisma.teacherPreference.deleteMany({ where: { userId: userRecord.id } });
+                    // Add other related data deletions here
+                }
+                const numDeleted = await prisma.user.deleteMany({ where: { clerkId: clerkUserId } });
+                if (numDeleted.count > 0) console.log(`🗑️ Webhook: User and related data deleted from DB: ${clerkUserId}`);
+                else console.log(`Webhook: User ${clerkUserId} not found in DB for deletion, or already deleted.`);
+            } else {
+                 console.warn(`Webhook: Received user.deleted event without a clerkUserId in data.id.`);
+            }
+        } else { 
+            console.log(`Webhook: Received (and ignored) event type: ${eventType}`); 
         }
-        const numDeleted = await prisma.user.deleteMany({ where: { clerkId: clerkUserId } });
-        if (numDeleted.count > 0) console.log(`🗑️ User deleted from DB: ${clerkUserId}`);
-        else console.log(`User ${clerkUserId} not found in DB for deletion.`);
-      }
-    } else { console.log(`Webhook: Received (and ignored) event: ${eventType}`); }
-    res.status(200).json({ message: "Webhook processed" });
-  } catch (dbError) { console.error(`!!! DB error for webhook ${eventType} (ClerkID: ${eventData?.id || 'N/A'}):`, dbError); res.status(500).json({ error: `DB error on ${eventType}` }); }
+        res.status(200).json({ message: "Webhook processed successfully" });
+    } catch (dbError) { 
+        console.error(`!!! Webhook DB Error during ${eventType} for ClerkID ${eventData?.id || 'N/A'}:`, dbError); 
+        res.status(500).json({ error: `Database error processing webhook event: ${dbError.message}` }); 
+    }
 });
 
-// --- Main API Router (mounted at /api) ---
+
+// --- Main API Router Definition ---
 const apiRouter = express.Router();
-app.use(express.json({ limit: '50mb' })); // Ensure this is before apiRouter if not globally first for non-webhook routes
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-
-// POST /api/teacher/upload-material
+// --- /api/teacher/* Routes ---
 apiRouter.post("/teacher/upload-material", upload.single('file'), async (req, res) => {
   const { clerkId, subject, classLevel, chapter, institution, department, courseCode, category, year, examType } = req.body;
-  console.log(`[POST /api/teacher/upload-material] clerkId: '${clerkId}', file: '${req.file?.originalname}', category: '${category}'`);
   if (!req.file) return res.status(400).json({ error: "No file uploaded." });
   if (!clerkId) { if (req.file?.path) await fs.unlink(req.file.path).catch(console.error); return res.status(400).json({ error: "Clerk ID required." }); }
   const user = await getUserByClerkId(clerkId);
   if (!user) { if (req.file?.path) await fs.unlink(req.file.path).catch(console.error); return res.status(404).json({ error: "User not found." }); }
+  
   try {
     const fileRecord = await prisma.uploadedFile.create({
       data: {
-        fileName: req.file.originalname, fileType: req.file.mimetype, fileUrl: req.file.path, fileSize: req.file.size,
-        uploadedById: user.id, subject: subject || null, classLevel: classLevel || null, chapter: chapter || null,
+        fileName: req.file.originalname, fileType: req.file.mimetype, 
+        fileUrl: req.file.path, // Storing the server path from multer
+        fileSize: req.file.size,
+        uploadedById: user.id, 
+        subject: subject || null, classLevel: classLevel || null, chapter: chapter || null, 
         institution: institution || null, department: department || null, courseCode: courseCode || null,
-        category: category || 'general_upload', year: year ? parseInt(year) : null, examType: examType || null,
+        category: category || 'general_upload', 
+        year: year ? parseInt(year) : null, examType: examType || null,
         processed: false, isVectorized: false,
       },
     });
     console.log(`File record created (ID: ${fileRecord.id}). Path: ${fileRecord.fileUrl}. Triggering async vectorization.`);
-    processAndVectorizeFile(req.file.path, fileRecord, user.id) // Fire and forget
-      .then(() => console.log(`[ASYNC] Vectorization completed for ${fileRecord.fileName}`))
-      .catch(err => console.error(`[ASYNC] Vectorization FAILED for ${fileRecord.fileName}:`, err));
-    res.status(201).json({ message: "File uploaded. Processing in background.", file: { id: fileRecord.id, name: fileRecord.fileName } });
+    processAndVectorizeFile(req.file.path, fileRecord, user.id)
+      .then(() => console.log(`[ASYNC] Vectorization background task completed for ${fileRecord.fileName}`))
+      .catch(err => console.error(`[ASYNC] Vectorization background task FAILED for ${fileRecord.fileName}:`, err));
+    res.status(201).json({ message: "File uploaded. Processing will begin shortly.", file: { id: fileRecord.id, name: fileRecord.fileName } });
   } catch (error) {
     console.error("DB error saving file record:", error);
     if (req.file?.path) await fs.unlink(req.file.path).catch(e => console.error("Error unlinking orphaned upload on DB error:", e.message));
@@ -380,10 +395,8 @@ apiRouter.post("/teacher/upload-material", upload.single('file'), async (req, re
   }
 });
 
-// GET /api/teacher/uploaded-files
 apiRouter.get("/teacher/uploaded-files", async (req, res) => {
   const { clerkId, category } = req.query;
-  console.log(`[GET /api/teacher/uploaded-files] clerkId: '${clerkId}', category: '${category}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -392,113 +405,146 @@ apiRouter.get("/teacher/uploaded-files", async (req, res) => {
     if (category) { whereClause.category = String(category); }
     const files = await prisma.uploadedFile.findMany({
       where: whereClause, orderBy: { createdAt: 'desc' },
-      select: {
+      select: { // Select only fields needed by client
         id: true, fileName: true, createdAt: true, subject: true, classLevel: true,
-        year: true, examType: true, fileUrl: true, category: true,
-        isVectorized: true, processed: true, notes: true
+        year: true, examType: true, category: true,
+        isVectorized: true, processed: true, notes: true, fileType: true, fileSize: true
+        // Avoid sending fileUrl (server path) to client unless explicitly needed for download via another route
       }
     });
-    console.log(`Found ${files.length} files for user ${user.id}, category '${category}'.`);
     res.json(files);
-  } catch (error) { console.error("Error fetching uploaded files:", error); res.status(500).json({ error: "Failed to fetch files.", details: error.message }); }
+  } catch (error) { console.error("Error fetching uploaded files:", error); res.status(500).json({ error: "Failed to fetch files." }); }
 });
 
-// DELETE /api/teacher/uploaded-files/:fileId
 apiRouter.delete("/teacher/uploaded-files/:fileId", async (req, res) => {
-  const { fileId } = req.params; const { clerkId } = req.body;
-  console.log(`[DELETE /api/teacher/uploaded-files/${fileId}] clerkId: '${clerkId}'`);
-  if (!clerkId) return res.status(401).json({ error: "Auth required." });
-  if (!fileId) return res.status(400).json({ error: "File ID required." });
+  const { fileId } = req.params; 
+  const { clerkId } = req.body; // Expect clerkId in body for DELETE auth
+  if (!clerkId) return res.status(401).json({ error: "Authentication required." });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found." });
+  if (!fileId) return res.status(400).json({ error: "File ID required." });
+
   try {
     const fileToDelete = await prisma.uploadedFile.findFirst({ where: { id: fileId, uploadedById: user.id } });
-    if (!fileToDelete) return res.status(404).json({ error: "File not found or not owned by user." });
+    if (!fileToDelete) return res.status(404).json({ error: "File not found or you do not have permission to delete it." });
 
     if (fileToDelete.isVectorized && fileToDelete.qdrantCollection && Array.isArray(fileToDelete.qdrantIds) && fileToDelete.qdrantIds.length > 0) {
       try {
-        console.log(`Attempting to delete Qdrant points for file ${fileId}:`, fileToDelete.qdrantIds);
         await qdrantClient.deletePoints(fileToDelete.qdrantCollection, { points: fileToDelete.qdrantIds });
         console.log(`Qdrant points deleted for file ${fileId}`);
-      }
-      catch (qError) { console.error(`Error deleting Qdrant points for file ${fileId}:`, qError); }
+      } catch (qError) { console.error(`Error deleting Qdrant points for file ${fileId}:`, qError); /* Continue with DB deletion */ }
     }
-    if (fileToDelete.fileUrl && !fileToDelete.fileUrl.startsWith('http') && fileToDelete.fileUrl.includes(UPLOAD_DIR.replace(/\/$/, ''))) {
-      try { await fs.unlink(fileToDelete.fileUrl); console.log(`Physical file deleted: ${fileToDelete.fileUrl}`); }
-      catch (fsError) { if (fsError.code !== 'ENOENT') console.error(`Error deleting physical file ${fileToDelete.fileUrl}:`, fsError); }
+    
+    if (fileToDelete.fileUrl && !fileToDelete.fileUrl.startsWith('http')) { // Check if it's a local path
+        const filePathToDelete = path.isAbsolute(fileToDelete.fileUrl) ? fileToDelete.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(fileToDelete.fileUrl));
+        try { 
+            await fs.access(filePathToDelete); 
+            await fs.unlink(filePathToDelete); console.log(`Physical file deleted: ${filePathToDelete}`); 
+        }
+        catch (fsError) { if (fsError.code !== 'ENOENT') console.error(`Error deleting physical file ${filePathToDelete}:`, fsError); }
     }
     await prisma.uploadedFile.delete({ where: { id: fileId } });
-    console.log(`DB record for file ${fileId} deleted.`);
     res.status(204).send();
   } catch (error) { console.error(`Error deleting file ${fileId}:`, error); res.status(500).json({ error: "Failed to delete file." }); }
 });
 
-// GET /api/teacher/notes
 apiRouter.get("/teacher/notes", async (req, res) => {
   const { clerkId } = req.query;
-  console.log(`[GET /api/teacher/notes] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
-    const notes = await prisma.note.findMany({ where: { userId: user.id }, orderBy: { createdAt: 'desc' } });
-    console.log(`Found ${notes.length} notes for user ${user.id}.`);
+    const notes = await prisma.note.findMany({ 
+        where: { userId: user.id }, 
+        orderBy: { updatedAt: 'desc' } 
+    });
     res.json(notes);
   } catch (error) { console.error("Error fetching notes:", error); res.status(500).json({ error: "Failed to fetch notes" }); }
 });
 
-// POST /api/teacher/notes
 apiRouter.post("/teacher/notes", async (req, res) => {
   const { clerkId, title, content, subject, classLevel, chapter, board, language, institution, department, courseCode } = req.body;
-  console.log(`[POST /api/teacher/notes] clerkId: '${clerkId}', title: '${title}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(clerkId);
   if (!user) return res.status(404).json({ error: "User not found" });
-  if (!title || !subject || !classLevel || !chapter || !board) return res.status(400).json({ error: "Missing required fields for note" });
+  if (!title || !subject || !classLevel || !chapter || !board) return res.status(400).json({ error: "Missing required fields for note: Title, Subject, Class Level, Chapter, Board." });
   try {
     const newNote = await prisma.note.create({
-      data: { userId: user.id, title, content: content || null, subject, classLevel, chapter, board, language: language || 'en', institution, department, courseCode },
+      data: { 
+          userId: user.id, title, content: content || null, subject, classLevel, chapter, board, 
+          language: language || 'en', institution: institution || null, 
+          department: department || null, courseCode: courseCode || null 
+        },
     });
-    console.log(`Note created (ID: ${newNote.id}) for user ${user.id}.`);
     res.status(201).json(newNote);
   } catch (error) { console.error("Error creating note:", error); res.status(500).json({ error: "Failed to create note" }); }
 });
 
-// DELETE /api/teacher/notes/:noteId
+apiRouter.put("/teacher/notes/:noteId", async (req, res) => {
+    const { noteId } = req.params;
+    const { clerkId, title, content, subject, classLevel, chapter, board, language, institution, department, courseCode } = req.body;
+    if (!clerkId) return res.status(401).json({ error: "Clerk ID required." });
+    const user = await getUserByClerkId(clerkId);
+    if (!user) return res.status(404).json({ error: "User not found." });
+
+    try {
+        const noteToUpdate = await prisma.note.findFirst({
+            where: { id: noteId, userId: user.id }
+        });
+        if (!noteToUpdate) return res.status(404).json({ error: "Note not found or not owned by user." });
+
+        const updatedNote = await prisma.note.update({
+            where: { id: noteId },
+            data: { 
+                title: title || undefined, // Only update if provided
+                content: content, // Allow setting content to empty string
+                subject: subject || undefined, 
+                classLevel: classLevel || undefined, 
+                chapter: chapter || undefined, 
+                board: board || undefined, 
+                language: language || undefined, 
+                institution: institution, 
+                department: department, 
+                courseCode: courseCode, 
+                updatedAt: new Date() 
+            }
+        });
+        res.json(updatedNote);
+    } catch (error) {
+        console.error(`Error updating note ${noteId}:`, error);
+        res.status(500).json({ error: "Failed to update note." });
+    }
+});
+
 apiRouter.delete("/teacher/notes/:noteId", async (req, res) => {
-  const { noteId } = req.params; const { clerkId } = req.body;
-  console.log(`[DELETE /api/teacher/notes/${noteId}] clerkId: '${clerkId}'`);
+  const { noteId } = req.params; 
+  const { clerkId } = req.body;
   if (!clerkId) return res.status(401).json({ error: "Auth required" });
   const user = await getUserByClerkId(clerkId);
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
     const note = await prisma.note.findFirst({ where: { id: noteId, userId: user.id } });
     if (!note) return res.status(404).json({ error: "Note not found or not owned by user" });
+    // TODO: If notes are vectorized, delete associated vectors from Qdrant here.
     await prisma.note.delete({ where: { id: noteId } });
-    console.log(`Note (ID: ${noteId}) deleted for user ${user.id}.`);
     res.status(204).send();
   } catch (error) { console.error(`Error deleting note ${noteId}:`, error); res.status(500).json({ error: "Failed to delete note" }); }
 });
 
-// GET /api/teacher/preferences/custom-prompt
 apiRouter.get("/teacher/preferences/custom-prompt", async (req, res) => {
   const { clerkId } = req.query;
-  console.log(`[GET /api/teacher/preferences/custom-prompt] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
     const preferences = await prisma.teacherPreference.findUnique({ where: { userId: user.id } });
-    if (!preferences) { console.log(`No custom prompt prefs found for user ${user.id}`); return res.status(404).json({ message: "No preferences found." }); }
-    console.log(`Custom prompt prefs found for user ${user.id}.`);
+    if (!preferences) return res.status(404).json({ message: "No preferences found." }); // Normal if user hasn't set any
     res.json(preferences);
   } catch (error) { console.error("Error fetching custom prompt prefs:", error); res.status(500).json({ error: "Failed to fetch prefs" }); }
 });
 
-// POST /api/teacher/preferences/custom-prompt
 apiRouter.post("/teacher/preferences/custom-prompt", async (req, res) => {
   const { clerkId, promptText, quickPreferences } = req.body;
-  console.log(`[POST /api/teacher/preferences/custom-prompt] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(clerkId);
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -508,179 +554,304 @@ apiRouter.post("/teacher/preferences/custom-prompt", async (req, res) => {
       update: { promptText: promptText || "", quickPreferences: quickPreferences || {} },
       create: { userId: user.id, promptText: promptText || "", quickPreferences: quickPreferences || {} },
     });
-    console.log(`Custom prompt prefs saved for user ${user.id}.`);
-    res.status(200).json({ message: "Preferences saved", preference: pref });
-  } catch (error) { console.error("Error saving custom prompt prefs:", error); res.status(500).json({ error: "Failed to save prefs" }); }
+    res.status(200).json({ message: "Preferences saved successfully.", preference: pref });
+  } catch (error) { console.error("Error saving custom prompt prefs:", error); res.status(500).json({ error: "Failed to save preferences" }); }
 });
 
-// GET /api/teacher/profile
 apiRouter.get("/teacher/profile", async (req, res) => {
   const { clerkId } = req.query;
-  console.log(`[GET /api/teacher/profile] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
-  try {
-    console.log(`Profile data found for user ${user.id}:`, { name: user.name, email: user.email, dep: user.department, inst: user.institution });
-    res.json({ name: user.name, email: user.email, department: user.department || null, institution: user.institution || null });
-  } catch (error) { console.error("Error fetching teacher profile:", error); res.status(500).json({ error: "Failed to fetch profile" }); }
+  // Return only necessary, non-sensitive profile info
+  res.json({ name: user.name, email: user.email, department: user.department || null, institution: user.institution || null });
 });
 
-// POST /api/teacher/profile
 apiRouter.post("/teacher/profile", async (req, res) => {
   const { clerkId, name, email, department, institution } = req.body;
-  console.log(`[POST /api/teacher/profile] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(clerkId);
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
     const updatedUser = await prisma.user.update({
-      where: { id: user.id }, // Use internal user.id for update
-      data: { name: name || user.name, email: email || user.email, department, institution },
+      where: { id: user.id }, // Use internal DB ID for update
+      data: { 
+          name: name || user.name, // Allow partial updates
+          // email: email || user.email, // Email usually managed by Clerk, avoid changing here unless explicitly intended
+          department: department, // Allow setting to null or string
+          institution: institution 
+        },
     });
-    console.log(`Profile updated for user ${user.id}.`);
-    res.status(200).json({ message: "Profile updated", profile: updatedUser });
+    res.status(200).json({ message: "Profile updated successfully.", profile: { name: updatedUser.name, email: updatedUser.email, department: updatedUser.department, institution: updatedUser.institution }});
   } catch (error) { console.error("Error updating teacher profile:", error); res.status(500).json({ error: "Failed to update profile" }); }
 });
 
-// GET /api/teacher/chat-history
+// Chat History Routes (now use new schema fields from prisma/schema.prisma)
 apiRouter.get("/teacher/chat-history", async (req, res) => {
   const { clerkId } = req.query;
-  console.log(`[GET /api/teacher/chat-history] clerkId: '${clerkId}'`);
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
     const histories = await prisma.chatHistory.findMany({
-      where: { userId: user.id }, orderBy: { updatedAt: 'desc' },
-      select: { id: true, subject: true, class: true, updatedAt: true, chapter: true }
+      where: { userId: user.id }, 
+      orderBy: { updatedAt: 'desc' },
+      select: { 
+        id: true, 
+        customTitle: true, 
+        frameworkId: true, 
+        updatedAt: true,
+        // For a preview, you might get the first user message or last AI summary
+        // This is a bit more complex with JSONB messages array.
+        // For now, keeping it simple. Frontend can fetch full details on selection.
+        subject: true, // Fallback if customTitle is not always set
+        class: true,   // Fallback
+      }
     });
-    console.log(`Found ${histories.length} chat histories for user ${user.id}.`);
-    res.json(histories);
+    const formattedHistories = histories.map(h => {
+        const framework = pedagogicalFrameworksConfig.find(f => f.id === h.frameworkId);
+        return {
+            id: h.id,
+            title: h.customTitle || `${framework?.label || h.subject || 'Chat'} (${new Date(h.updatedAt).toLocaleDateString()})`,
+            date: new Date(h.updatedAt).toLocaleString(),
+            frameworkId: h.frameworkId || pedagogicalFrameworksConfig[0].id, 
+        };
+    });
+    res.json(formattedHistories);
   } catch (error) { console.error("Error fetching chat histories:", error); res.status(500).json({ error: "Failed to fetch chat histories" }); }
 });
 
-// GET /api/teacher/chat-history/:historyId
 apiRouter.get("/teacher/chat-history/:historyId", async (req, res) => {
-  const { historyId } = req.params; const { clerkId } = req.query;
-  console.log(`[GET /api/teacher/chat-history/${historyId}] clerkId: '${clerkId}'`);
+  const { historyId } = req.params; 
+  const { clerkId } = req.query;
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
-    const chatHistory = await prisma.chatHistory.findFirst({ where: { id: historyId, userId: user.id } });
-    if (!chatHistory) { console.log(`Chat history ${historyId} not found for user ${user.id}.`); return res.status(404).json({ error: "Chat history not found or access denied." }); }
-    console.log(`Chat history ${historyId} found for user ${user.id}.`);
-    res.json(chatHistory);
-  } catch (error) { console.error("Error fetching chat history:", error); res.status(500).json({ error: "Failed to fetch chat history." }); }
+    const chatHistory = await prisma.chatHistory.findFirst({ 
+        where: { id: historyId, userId: user.id } 
+    });
+    if (!chatHistory) return res.status(404).json({ error: "Chat history not found or access denied." });
+    res.json(chatHistory); // Send the full chat history object
+  } catch (error) { console.error("Error fetching chat history detail:", error); res.status(500).json({ error: "Failed to fetch chat history detail." }); }
 });
 
-// POST /api/chat/generate-questions
+// OLD /api/chat/generate-questions (Deprecated)
 apiRouter.post("/chat/generate-questions", async (req, res) => {
-  const { clerkId, userQuery, questionPreferences, customPromptText, chatHistoryId } = req.body;
-  console.log(`[POST /api/chat/generate-questions] clerkId: '${clerkId}' Query: '${userQuery.substring(0, 30)}...'`);
-  if (!clerkId || !userQuery || !questionPreferences) return res.status(400).json({ error: "Missing required fields." });
-  const user = await getUserByClerkId(clerkId);
-  if (!user) return res.status(404).json({ error: "User not found." });
+  console.warn("[DEPRECATED] /api/chat/generate-questions called. Client should use /api/ai/pedagogy-assist.");
+  return res.status(410).json({ 
+      error: "This endpoint is deprecated.",
+      message: "Please update your client application to use the new /api/ai/pedagogy-assist endpoint for all AI chat interactions."
+  });
+});
 
-  const collectionName = `teacher_${user.id}_materials`;
-  console.log(`Using Qdrant collection: ${collectionName}`);
+
+// *****************************************************************************
+// ******************* ADVANCED AI PEDAGOGY CO-PILOT ROUTE *********************
+// *****************************************************************************
+apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
+  const {
+    clerkId, userQuery, activeFrameworkId, aiTask, preferences,
+    customPromptText, chatHistoryId, activeContextItemIds,
+  } = req.body;
+
+  console.log(`\n[POST /api/ai/pedagogy-assist] Received Request`);
+  console.log(`  Clerk ID: ${clerkId}, Framework: ${activeFrameworkId}, Task: ${aiTask}`);
+
+  if (!clerkId) return res.status(401).json({ error: "Authentication required." });
+  const user = await getUserByClerkId(clerkId);
+  if (!user) return res.status(404).json({ error: "User not found in database." });
+  if (!activeFrameworkId || !aiTask) return res.status(400).json({ error: "Framework and AI task are required." });
 
   try {
-    const qdrantStore = new QdrantVectorStore(embeddings, { client: qdrantClient, collectionName });
-    let retrievedDocs = [];
-    try {
-      console.log(`Searching Qdrant with query: "${userQuery.substring(0, 50)}..."`);
-      retrievedDocs = await qdrantStore.similaritySearch(userQuery, 5); // k=5, adjust as needed
-      console.log(`Retrieved ${retrievedDocs.length} docs from Qdrant.`);
-    }
-    catch (qError) { console.warn(`Qdrant search failed (collection may not exist/be empty for user ${user.id}):`, qError.message); }
+    let ragContextString = "";
+    const usedSourceDetails = [];
 
-    const context = retrievedDocs.map(doc => doc.pageContent).join("\n---\n");
-    const usedDocumentSources = [...new Set(retrievedDocs.map(doc => doc.metadata?.source_filename || 'Unknown Source'))];
-
-    const bloomLevelsInfo = `Bloom's Taxonomy Definitions: Remember (recall facts), Understand (explain concepts), Apply (use info new ways), Analyze (draw connections), Evaluate (justify decisions), Create (produce new work).`;
-    let targetBloomLevel = "Understand";
-    const queryLower = userQuery.toLowerCase();
-    // Basic keyword matching for Bloom's level from query
-    if (queryLower.includes("remember") || queryLower.includes("recall")) targetBloomLevel = "Remember";
-    else if (queryLower.includes("understand") || queryLower.includes("explain")) targetBloomLevel = "Understand";
-    else if (queryLower.includes("apply") || queryLower.includes("solve")) targetBloomLevel = "Apply";
-    else if (queryLower.includes("analyze") || queryLower.includes("compare")) targetBloomLevel = "Analyze";
-    else if (queryLower.includes("evaluate") || queryLower.includes("justify")) targetBloomLevel = "Evaluate";
-    else if (queryLower.includes("create") || queryLower.includes("design")) targetBloomLevel = "Create";
-    console.log(`Determined target Bloom's level: ${targetBloomLevel} for query: "${userQuery}"`);
-
-    const systemPrompt = `You are an AI that generates educational questions based on Bloom's Taxonomy.
-Teacher's General Preferences for question paper style: ${customPromptText || "None specified."}
-Current Request Preferences: Question Pattern: ${questionPreferences.pattern}, Subject/Stream: ${questionPreferences.stream}, Marks Distribution: ${questionPreferences.marksDistribution}.
-${questionPreferences.marksDistribution === 'custom' ? `Custom Marks Breakdown: MCQ ${questionPreferences.customMarks.mcq}%, Short Answer ${questionPreferences.customMarks.shortAnswer}%, Long Answer ${questionPreferences.customMarks.longAnswer}%, Practical ${questionPreferences.customMarks.practical}%` : ''}
-${bloomLevelsInfo}
-Teacher's Specific Query: "${userQuery}"
-The targeted Bloom's Taxonomy level for the questions you generate should be: '${targetBloomLevel}'.
-For each question generated, you MUST specify its "bloomLevel" as '${targetBloomLevel}' and provide a brief "justification" explaining how the question aligns with this specific Bloom's level definition.
-Respond ONLY with a valid JSON array of objects. Each object MUST have three keys: "question" (string), "bloomLevel" (string, which must be '${targetBloomLevel}'), and "justification" (string). Do not include any introductory text, concluding text, or markdown formatting like \`\`\`json ... \`\`\` outside the JSON array itself.
-Example: [{"question": "What is the main function of the mitochondria?", "bloomLevel": "Remember", "justification": "This requires recalling a basic fact about cell organelles."}]`;
-
-    const fullPrompt = `${systemPrompt}\n\nContext from Teacher's Uploaded Materials (use this to ground your questions if relevant, otherwise use general knowledge for the subject and level):\n---\n${context || "No specific context from uploaded materials was retrieved for this query."}\n---\n\nGenerate the questions now in the specified JSON array format:`;
-
-    console.log(`Sending prompt to Gemini (approx ${fullPrompt.length} chars). Preview: ${fullPrompt.substring(0, 250)}...`);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-    const result = await model.generateContent(fullPrompt);
-    const responseText = result.response.text();
-    console.log(`Gemini response received (raw). Length: ${responseText.length}. Preview: ${responseText.substring(0, 250)}...`);
-
-    let generatedQuestions;
-    try {
-      const cleaned = responseText.trim().replace(/^```json\s*|```\s*$/g, '').replace(/,\s*\]$/, ']'); // Remove trailing comma if any before closing bracket
-      generatedQuestions = JSON.parse(cleaned);
-      if (!Array.isArray(generatedQuestions) || !generatedQuestions.every(q => typeof q.question === 'string' && typeof q.bloomLevel === 'string' && typeof q.justification === 'string')) {
-        console.warn("LLM response JSON structure validation failed AFTER cleaning:", JSON.stringify(generatedQuestions, null, 2).substring(0, 300));
-        throw new Error("LLM response is not a valid array of correctly structured question objects.");
-      }
-      console.log(`Successfully parsed ${generatedQuestions.length} questions from LLM response.`);
-    } catch (parseError) {
-      console.error("LLM JSON parse error. Cleaned text was:", responseText.trim().replace(/^```json\s*|```\s*$/g, '').substring(0, 500), "Error:", parseError);
-      generatedQuestions = [{ question: "AI experienced an issue formatting the response. Please try again or rephrase. Technical detail: " + parseError.message, bloomLevel: "N/A", justification: "Error parsing LLM output." }];
-    }
-
-    const messagesToStore = [
-      { role: "user", content: userQuery, preferences: questionPreferences, customPrompt: customPromptText, timestamp: new Date().toISOString() },
-      { role: "assistant", content: generatedQuestions, timestamp: new Date().toISOString(), usedSources: usedDocumentSources }
-    ];
-
-    let finalChatHistoryId = chatHistoryId;
-    if (finalChatHistoryId) {
-      const existingChat = await prisma.chatHistory.findFirst({ where: { id: finalChatHistoryId, userId: user.id } });
-      if (existingChat) {
-        const prevMsgs = Array.isArray(existingChat.messages) ? existingChat.messages : []; // Handle if messages is null
-        await prisma.chatHistory.update({
-          where: { id: finalChatHistoryId },
-          data: { messages: [...prevMsgs, ...messagesToStore], usedDocuments: { sources: usedDocumentSources }, generatedQuestions: { items: generatedQuestions }, updatedAt: new Date() },
-        });
-        console.log(`Appended to existing chat history ID: ${finalChatHistoryId}`);
-      } else { finalChatHistoryId = null; console.log(`Chat history ID ${chatHistoryId} not found for user, creating new.`); }
-    }
-    if (!finalChatHistoryId) {
-      const newChat = await prisma.chatHistory.create({
-        data: { userId: user.id, class: questionPreferences.stream || 'Gen', subject: questionPreferences.stream || 'Gen', chapter: 'Gen', messages: messagesToStore, usedDocuments: { sources: usedDocumentSources }, generatedQuestions: { items: generatedQuestions } },
+    if (activeContextItemIds && activeContextItemIds.length > 0) {
+      console.log("  Processing RAG context for items:", activeContextItemIds.map(item => `${item.type}:${item.id}`));
+      const contextFetchPromises = activeContextItemIds.map(async (itemInfo) => {
+        if (itemInfo.type === 'document') {
+          const docFile = await prisma.uploadedFile.findFirst({
+            where: { id: itemInfo.id, uploadedById: user.id },
+          });
+          if (docFile && docFile.fileUrl && docFile.isVectorized) {
+            const filePathOnServer = path.isAbsolute(docFile.fileUrl) ? docFile.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
+            try {
+                const content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
+                if (content) {
+                    usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
+                    return `CONTEXT SOURCE (Document: ${docFile.fileName}):\n${content}\nEND CONTEXT SOURCE (Document: ${docFile.fileName})\n\n`;
+                }
+            } catch (err) { console.warn(`RAG: Error loading document ${docFile.fileName}:`, err.message); }
+          }
+        } else if (itemInfo.type === 'note') {
+          const note = await prisma.note.findFirst({ where: { id: itemInfo.id, userId: user.id } });
+          if (note && note.content) {
+            // TODO: Check note.isVectorized if implementing separate vectorization for notes
+            usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
+            return `CONTEXT SOURCE (Note: ${note.title}):\n${note.content}\nEND CONTEXT SOURCE (Note: ${note.title})\n\n`;
+          }
+        }
+        return null;
       });
-      finalChatHistoryId = newChat.id;
-      console.log(`Created new chat history ID: ${finalChatHistoryId}`);
+      const resolvedContexts = (await Promise.all(contextFetchPromises)).filter(Boolean);
+      ragContextString = resolvedContexts.join("");
+      if (ragContextString) console.log(`  Assembled RAG Context from ${usedSourceDetails.length} items.`);
+      else console.log("  No usable RAG context content found from selected items.");
     }
-    res.status(200).json({ answer: generatedQuestions, chatHistoryId: finalChatHistoryId, usedSources: usedDocumentSources });
-  } catch (error) { console.error("RAG chat error:", error); res.status(500).json({ error: "Failed to generate questions. " + error.message }); }
+
+    let systemInstruction = `You are "EduCraft AI", an expert pedagogical co-pilot for educators. Your responses should be helpful, clear, and directly address the user's request. Adhere to the specified pedagogical framework.`;
+    let taskSpecificInstructions = "";
+    // THE CRITICAL OUTPUT FORMAT INSTRUCTION BLOCK:
+    let outputFormatInstructions = `
+CRITICAL: Respond ONLY with a valid JSON object. This JSON object MUST have two top-level keys: "summaryText" (a brief, natural language summary of your response or action taken, keep it concise) and "structuredOutput" (this will contain the main detailed content). 
+Ensure mathematical or chemical equations are ALWAYS in LaTeX notation: inline math with $...$ (e.g., $E=mc^2$), block/display math with $$...$$ (e.g., $$\\sum_{i=0}^n i = \\frac{n(n+1)}{2}$$).
+If generating a table, "structuredOutput" should be: {"type": "table", "data": {"headers": ["Header1", ...], "rows": [["r1c1", ...], ["r2c1", ...]]}}.
+If generating a list of questions, "structuredOutput" should be: {"type": "question_list", "data": [{"questionText": "...", "bloomLevel": "(if applicable, e.g., 'Apply')", "dokLevel": "(if applicable, e.g., 'DOK 2')", "justification": "...", "options": ["opt1", ...], "correctAnswerIndex": 0 (for MCQs), "rubricHints": "..."}]}.
+If suggesting activities, "structuredOutput" should be: {"type": "activity_suggestion_list", "data": [{"title": "...", "description": "...", "pedagogicalRationale": "...", "materialsNeeded": ["..."], "udlConnections": ["..."], "frameworkTags": ["Bloom:Analyze", "DOK:3"]}]}.
+If providing simple text/explanation, "structuredOutput" should be: {"type": "simple_text", "data": {"text": "Your detailed textual response here, which can include Markdown for formatting and LaTeX for equations."}}.
+If generating a list of learning objectives, "structuredOutput" should be: {"type": "objectives_list", "data": [{"objective": "...", "rationale": "...", "frameworkAlignment": "e.g., Bloom's Understand"}]}.
+If providing UDL analysis/suggestions, "structuredOutput" should be: {"type": "udl_analysis", "data": {"principle": "Representation/Action/Engagement", "checkpoint": "e.g., 1.1 Offer ways of customizing the display", "suggestions": ["suggestion1", "suggestion2"], "rationale": "..."}}.
+Do not include any text outside this JSON object. Do not use markdown backticks like \`\`\`json ... \`\`\` to wrap the JSON.
+    `;
+
+
+    const currentFrameworkConfig = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId);
+    if (currentFrameworkConfig) systemInstruction += ` The educator is currently focusing on the "${currentFrameworkConfig.label}" pedagogical framework.`;
+    if (customPromptText) systemInstruction += `\nTeacher's General AI Instructions (Follow these closely):\n${customPromptText}`;
+
+    if (aiTask === 'generate_questions') {
+        taskSpecificInstructions = `Task: Generate educational questions. User Query: "${userQuery}". Preferences for questions: ${JSON.stringify(preferences || {})}. Ensure "structuredOutput" is "question_list".`;
+    } else if (aiTask === 'suggest_activities') {
+        taskSpecificInstructions = `Task: Suggest educational activities. User Query: "${userQuery}". Preferences for activities: ${JSON.stringify(preferences || {})}. Ensure "structuredOutput" is "activity_suggestion_list".`;
+    } 
+    // ... (MORE else if blocks for ALL your AI TASKS defined in frontend aiTasks constant) ...
+    else { // Fallback for unhandled tasks
+        taskSpecificInstructions = `Task: General Assistance for task type "${aiTask}". User Query: "${userQuery}". Preferences: ${JSON.stringify(preferences || {})}. Provide a helpful and relevant response.`;
+    }
+
+    const fullPromptForLLM = `${systemInstruction}\n\n${taskSpecificInstructions}\n\n${ragContextString ? `Relevant Context from Teacher's Uploaded Materials (Prioritize this information):\n${ragContextString}\nEND OF TEACHER'S MATERIALS\n\n` : ""}${outputFormatInstructions}`;
+    
+    console.log("  Full Prompt for LLM (First 600 chars):", fullPromptForLLM.substring(0,600) + (fullPromptForLLM.length > 600 ? "..." : ""));
+
+    let llmApiResponseText;
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const result = await model.generateContent(fullPromptForLLM);
+        llmApiResponseText = result.response.text();
+        console.log("  LLM Raw Response (First 600 chars):", llmApiResponseText.substring(0,600) + (llmApiResponseText.length > 600 ? "..." : ""));
+    } catch (llmError) {
+        console.error("!!!! LLM API Call Error:", llmError);
+        throw new Error(`AI model communication failed: ${llmError.message || String(llmError)}`);
+    }
+
+    let parsedAiResponse;
+    try {
+        let jsonString = llmApiResponseText.trim();
+        
+        // Attempt to remove markdown code fences if present
+        // Handles ```json ... ``` or just ``` ... ```
+        const fenceMatch = jsonString.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+        if (fenceMatch && fenceMatch[1]) {
+            jsonString = fenceMatch[1].trim();
+            console.log("  Successfully stripped markdown fences from LLM response.");
+        } else {
+            console.log("  No markdown fences found or regex didn't match, attempting to parse as is.");
+        }
+        
+        parsedAiResponse = JSON.parse(jsonString);
+
+        if (typeof parsedAiResponse.summaryText !== 'string' || typeof parsedAiResponse.structuredOutput === 'undefined') {
+            console.warn("LLM response parsed but missing required keys (summaryText or structuredOutput). Raw JSON:", jsonString.substring(0, 300) + "...");
+            // Provide a more graceful fallback if keys are missing but it's still valid JSON
+            parsedAiResponse = { 
+                summaryText: parsedAiResponse.summaryText || "AI response structure was incomplete. Full content in details.",
+                structuredOutput: parsedAiResponse.structuredOutput || { type: "simple_text", data: { text: "Structured output was missing. Raw JSON: " + jsonString } }
+            };
+        }
+    } catch (parseError) {
+      console.error("!!!! LLM JSON Parse Error:", parseError, "\nRaw LLM Response (after initial trim) was:\n", llmApiResponseText.trim().substring(0, 1000) + "...");
+      parsedAiResponse = {
+        summaryText: "AI response format error. Displaying raw output.",
+        structuredOutput: { type: "simple_text", data: { text: `Raw AI Output (JSON parse failed: ${parseError.message}):\n\n${llmApiResponseText}` }}
+      };
+    }
+
+    const messagesToStoreEntry = [
+      { role: "user", content: userQuery, preferences: preferences, aiTaskType: aiTask, timestamp: new Date().toISOString() },
+      { 
+        role: "assistant", 
+        summaryText: parsedAiResponse.summaryText,
+        structuredContent: parsedAiResponse.structuredOutput,
+        usedSources: usedSourceDetails, 
+        aiTaskType: aiTask,
+        timestamp: new Date().toISOString() 
+      }
+    ];
+    
+    let finalChatHistoryId = chatHistoryId;
+    let finalChatTitle = ""; 
+
+    const querySnippetForTitle = userQuery ? userQuery.substring(0, 30) + (userQuery.length > 30 ? "..." : "") : aiTask.replace(/_/g, ' ');
+    const currentFrameworkLabelForTitle = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId)?.label || activeFrameworkId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+    if (finalChatHistoryId) {
+        const existingChat = await prisma.chatHistory.findUnique({ where: { id: finalChatHistoryId, userId: user.id } });
+        if (existingChat) {
+            const updatedChat = await prisma.chatHistory.update({
+                where: { id: finalChatHistoryId },
+                data: {
+                    messages: { push: messagesToStoreEntry },
+                    lastPreferences: preferences, 
+                    activeContextItems: activeContextItemIds ? activeContextItemIds.map(item => ({id: item.id, type: item.type, name: item.name})) : [], 
+                    frameworkId: activeFrameworkId,
+                    updatedAt: new Date()
+                },
+            });
+            finalChatTitle = updatedChat.customTitle || currentFrameworkLabelForTitle + ": " + querySnippetForTitle;
+        } else { finalChatHistoryId = null; } 
+    }
+    
+    if (!finalChatHistoryId) {
+        finalChatTitle = currentFrameworkLabelForTitle + ": " + querySnippetForTitle;
+        const newChat = await prisma.chatHistory.create({
+            data: {
+                userId: user.id,
+                messages: messagesToStoreEntry,
+                customTitle: finalChatTitle,
+                frameworkId: activeFrameworkId,
+                subject: preferences?.subject || currentFrameworkLabelForTitle,
+                class: preferences?.classLevel || "General",
+                chapter: preferences?.chapter || querySnippetForTitle.substring(0,50),
+                lastPreferences: preferences,
+                activeContextItems: activeContextItemIds ? activeContextItemIds.map(item => ({id: item.id, type: item.type, name: item.name})) : [],
+            }
+        });
+        finalChatHistoryId = newChat.id;
+    }
+    
+    res.status(200).json({ 
+      summaryText: parsedAiResponse.summaryText, 
+      structuredOutput: parsedAiResponse.structuredOutput, 
+      chatHistoryId: finalChatHistoryId, 
+      usedSources: usedSourceDetails,
+      chatTitle: finalChatTitle 
+    });
+
+  } catch (error) {
+    console.error("!!!! AI Pedagogy Assist Endpoint Error Catch Block:", error);
+    res.status(500).json({ error: "Failed to process AI co-pilot request. " + (error.message || "Unknown server error.") });
+  }
 });
 
 // --- Mount API Router ---
-app.use('/api', apiRouter); // All API routes will be prefixed with /api
+app.use('/api', apiRouter); 
 
-// --- Root Route ---
+// --- Root Route & Start Server ---
 app.get('/', (req, res) => {
-  res.send('QuestionGenius API is Live and Well!');
+  res.send('EduCraft AI Co-Pilot API is Live and Well!');
 });
 
-// --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`Backend server fully initialized and running on http://localhost:${PORT}`);
+  console.log(`Backend server (EduCraft Co-Pilot) fully initialized and running on http://localhost:${PORT}`);
 });

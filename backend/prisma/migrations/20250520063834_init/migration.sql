@@ -109,14 +109,16 @@ CREATE TABLE "UploadedFile" (
 CREATE TABLE "ChatHistory" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "class" TEXT NOT NULL,
-    "subject" TEXT NOT NULL,
-    "chapter" TEXT NOT NULL,
+    "customTitle" TEXT,
+    "frameworkId" TEXT,
+    "lastPreferences" JSONB,
+    "activeContextItems" JSONB,
     "messages" JSONB NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    "usedDocuments" JSONB,
-    "generatedQuestions" JSONB,
+    "class" TEXT,
+    "subject" TEXT,
+    "chapter" TEXT,
 
     CONSTRAINT "ChatHistory_pkey" PRIMARY KEY ("id")
 );
