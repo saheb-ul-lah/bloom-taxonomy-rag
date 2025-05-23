@@ -656,6 +656,9 @@ apiRouter.post("/chat/generate-questions", async (req, res) => {
 });
 
 
+// *****************************************************************************
+// ******************* ADVANCED AI PEDAGOGY CO-PILOT ROUTE *********************
+// *****************************************************************************
 apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
   const {
     clerkId, userQuery, activeFrameworkId, aiTask,
@@ -663,8 +666,11 @@ apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
   } = req.body;
 
   console.log(`\n[AI PEDAGOGY ASSIST] Clerk: ${clerkId}, Framework: ${activeFrameworkId}, Task: ${aiTask}`);
-  if (preferences) console.log(`  Prefs: ${JSON.stringify(preferences).substring(0, 100)}...`);
+  if (preferences && Object.keys(preferences).length > 0) console.log(`  Prefs: ${JSON.stringify(preferences).substring(0,150)}...`);
+  else console.log(`  Prefs: None provided or empty.`);
   if (activeContextItems && activeContextItems.length > 0) console.log(`  Context Items: ${activeContextItems.length}`);
+  else console.log(`  Context Items: None selected.`);
+
 
   if (!clerkId) return res.status(401).json({ error: "Authentication required: Clerk ID missing." });
   const user = await getUserByClerkId(clerkId);
@@ -676,7 +682,7 @@ apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
     const usedSourceDetails = [];
 
     if (activeContextItems && activeContextItems.length > 0) {
-      console.log("  Processing RAG context for items:", activeContextItems.map(item => `${item.type}:${item.id.substring(0, 8)}... (${item.name})`));
+      console.log("  Processing RAG context for items:", activeContextItems.map(item => `${item.type}:${item.id.substring(0,8)}... (${item.name})`));
       for (const itemInfo of activeContextItems) {
         if (!itemInfo || !itemInfo.id || !itemInfo.type || !itemInfo.name) {
           console.warn("RAG: Invalid itemInfo in activeContextItems, skipping:", itemInfo); continue;
@@ -684,99 +690,194 @@ apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
         let content = null;
         if (itemInfo.type === 'document') {
           const docFile = await prisma.uploadedFile.findFirst({ where: { id: itemInfo.id, uploadedById: user.id } });
-          if (docFile?.fileUrl && docFile.isVectorized) { // Make sure it's vectorized to be relevant for RAG
+          if (docFile?.fileUrl && docFile.isVectorized) {
             const filePathOnServer = path.isAbsolute(docFile.fileUrl) ? docFile.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
             content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
-            if (content) {
-              usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
-              ragContextString += `\n\n--- START CONTEXT FROM: Document - ${docFile.fileName} ---\n${content}\n--- END CONTEXT FROM: Document - ${docFile.fileName} ---\n\n`;
-            } else console.warn(`RAG: No content from document ${docFile.fileName}`);
+            if (content && content.trim() !== "") {
+                 usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
+                 ragContextString += `\n\n--- START CONTEXT FROM: Document - ${docFile.fileName} ---\n${content.substring(0, 15000)} ${content.length > 15000 ? '... [TRUNCATED]' : ''}\n--- END CONTEXT FROM: Document - ${docFile.fileName} ---\n\n`; // Truncate long docs
+            } else console.warn(`RAG: No usable content from document ${docFile.fileName}`);
           } else console.warn(`RAG: Document ${itemInfo.name} (ID: ${itemInfo.id}) not found, not vectorized, or no fileUrl.`);
         } else if (itemInfo.type === 'note') {
           const note = await prisma.note.findFirst({ where: { id: itemInfo.id, userId: user.id } });
-          if (note?.content) {
+          if (note?.content && note.content.trim() !== "") {
             content = note.content;
             usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
-            ragContextString += `\n\n--- START CONTEXT FROM: Note - ${note.title} ---\n${content}\n--- END CONTEXT FROM: Note - ${note.title} ---\n\n`;
+            ragContextString += `\n\n--- START CONTEXT FROM: Note - ${note.title} ---\n${content.substring(0, 15000)} ${content.length > 15000 ? '... [TRUNCATED]' : ''}\n--- END CONTEXT FROM: Note - ${note.title} ---\n\n`; // Truncate long notes
           } else console.warn(`RAG: Note ${itemInfo.name} (ID: ${itemInfo.id}) not found or no content.`);
         }
       }
       if (ragContextString) console.log(`  Assembled RAG Context from ${usedSourceDetails.length} items. Total length: ${ragContextString.length}.`);
       else console.log("  No usable RAG content found from selected items.");
     } else {
-      console.log("  No activeContextItems provided. Proceeding without specific RAG context from user documents/notes.");
+      console.log("  No activeContextItems provided for RAG.");
     }
 
-    let systemInstruction = `You are "EduCraft AI", an expert pedagogical co-pilot for educators. Your responses should be helpful, clear, and directly address the user's request.
+    let systemInstruction = `You are "EduCraft AI", an expert pedagogical co-pilot for educators. Your responses MUST be helpful, clear, and directly address the user's request.
 You MUST adhere to the specified pedagogical framework and AI task.
-The user's overall preferences are: ${JSON.stringify(customPromptText || "None given", null, 2)}.
-The user's specific preferences for this task, within the current framework, are: ${JSON.stringify(preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {}, null, 2)}.`;
-
+User's General Custom Instructions (if any, apply these broadly): ${JSON.stringify(customPromptText || "None provided", null, 2)}.
+User's Specific Preferences for this request (relevant to current framework/task): ${JSON.stringify(preferences || {}, null, 2)}.`;
+    
     const currentFramework = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId);
-    if (currentFramework) systemInstruction += `\nThe current pedagogical framework is: "${currentFramework.label}".`;
+    if (currentFramework) systemInstruction += `\nCurrent Pedagogical Framework: "${currentFramework.label}".`;
 
     const currentTaskInfo = aiTasksConfig[activeFrameworkId]?.find(t => t.id === aiTask) || aiTasksConfig.common.find(t => t.id === aiTask);
-    if (currentTaskInfo) systemInstruction += `\nThe current AI task is: "${currentTaskInfo.label}".`;
-
+    if (currentTaskInfo) systemInstruction += `\nCurrent AI Task: "${currentTaskInfo.label}".`;
 
     let taskSpecificPrompts = "";
-    // === DETAILED TASK-SPECIFIC PROMPT ENGINEERING ===
-    // This is CRITICAL. Each task needs specific instructions for content and JSON structure.
-    // The `preferences` object passed from frontend (e.g., `preferences[activeFrameworkId][aiTask]`) should be used here.
-    // Example for 'generate_questions':
-    if (aiTask === 'generate_questions') {
-      const qPrefs = preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {};
-      taskSpecificPrompts = `
-        Task: Generate educational questions.
-        User Query: "${userQuery}"
-        Based on the query, RAG context (if any), and these preferences:
-        - Target Bloom's Levels (if Bloom's Architect framework): ${qPrefs.targetLevels?.join(', ') || 'Not specified'}
-        - Target DOK Level (if DOK Navigator framework): ${qPrefs.targetDOK || 'Not specified'}
-        - Number of questions: ${qPrefs.numQuestions || qPrefs.numItems || 3}
-        - Preferred question types: ${qPrefs.questionTypes ? Object.entries(qPrefs.questionTypes).filter(([_, v]) => v).map(([k, _]) => k).join(', ') : 'Variety'}
-        - Additional instructions from user query: "${userQuery}"
+    const taskPrefs = preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {};
 
-        Output Format for "structuredOutput" (type: "question_list"):
-        An array of objects, where each object represents a question and has:
-        "questionText": "The full text of the question (can include LaTeX for math: $inline$ or $$block$$).",
-        "bloomLevel": "(string, e.g., 'Apply', 'Analyze', only if Bloom's Architect framework is active, otherwise null or omit)",
-        "dokLevel": "(string, e.g., 'DOK 2', 'DOK 3', only if DOK Navigator framework is active, otherwise null or omit)",
-        "options": ["Array of strings for MCQ options. Omit or null if not MCQ.", "Option B", "..."],
-        "correctAnswerIndex": (integer, 0-based index for correct MCQ option. Omit or null if not MCQ or no single correct answer.),
-        "justification": "Brief explanation for why the question is relevant or how it assesses the targeted skill/level.",
-        "rubricHints": "Brief hints for grading or what to look for in a good answer, especially for open-ended questions."
-        Provide a concise "summaryText" like "Generated X questions on [topic] focusing on [levels/types]."
+    if (aiTask === 'generate_questions') {
+        taskSpecificPrompts = `
+        Task: Generate educational questions related to: "${userQuery}".
+        Apply these preferences:
+        - Target Bloom's Levels (if Bloom's Architect framework): ${taskPrefs.targetLevels?.join(', ') || 'Not specified, use professional judgment.'}
+        - Target DOK Level (if DOK Navigator framework): ${taskPrefs.targetDOK || 'Not specified, use professional judgment.'}
+        - Number of questions: ${taskPrefs.numQuestions || taskPrefs.numItems || 3}.
+        - Preferred question types: ${taskPrefs.questionTypes ? Object.entries(taskPrefs.questionTypes).filter(([_,v])=>v).map(([k,_])=>k).join(', ') : 'A variety suitable for the topic and level.'}.
+        - Add a brief explanation or extra info for each question generated, within its object.
+
+        The "structuredOutput" object MUST have the following structure:
+        {
+          "type": "question_list",
+          "data": [
+            {
+              "questionText": "Full question text (LaTeX: $inline$ or $$block$$).",
+              "bloomLevel": "(string, e.g., 'Apply', or null/omit if not Bloom's).",
+              "dokLevel": "(string, e.g., 'DOK 2', or null/omit if not DOK).",
+              "options": ["Array of strings for MCQ options. Omit/null if not MCQ."],
+              "correctAnswerIndex": "(integer, 0-based for MCQ. Omit/null if not applicable.)",
+              "justification": "Why this question is good/relevant for the topic and specified cognitive level.",
+              "rubricHints": "Brief grading hints for open-ended questions.",
+              "explanation": "A short explanation of the concept tested or additional relevant information about the question's topic."
+            }
+          ]
+        }
+        "summaryText" should be concise, e.g., "Generated X questions on [topic] focusing on [levels/types], with explanations."
         `;
     } else if (aiTask === 'suggest_activities') {
-      const actPrefs = preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {};
-      taskSpecificPrompts = `
-        Task: Suggest educational activities.
-        User Query: "${userQuery}"
-        Based on the query, RAG context (if any), and these preferences:
-        - Target DOK Level (if DOK Navigator): ${actPrefs.targetDOK || 'Not specified'}
-        - Number of activities: ${actPrefs.numItems || 2}
-        - Inquiry Model (if Constructivist Spark): ${actPrefs.inquiryModel || 'Not specified'}
-        - Additional instructions from user query: "${userQuery}"
+        taskSpecificPrompts = `
+        Task: Suggest educational activities related to: "${userQuery}".
+        Apply these preferences:
+        - Target DOK Level (if DOK Navigator): ${taskPrefs.targetDOK || 'Not specified, aim for engaging and appropriate depth.'}
+        - Number of activities: ${taskPrefs.numItems || 2}.
+        - Inquiry Model (if Constructivist Spark): ${taskPrefs.inquiryModel || 'Not specified, choose suitable model.'}.
+        - Include a brief explanation or extra info for each activity, within its object.
 
-        Output Format for "structuredOutput" (type: "activity_suggestion_list"):
-        An array of objects, where each object represents an activity suggestion and has:
-        "title": "Concise title for the activity.",
-        "description": "Detailed description of the activity, what students will do.",
-        "pedagogicalRationale": "Explanation of why this activity is effective for the learning goals and chosen framework.",
-        "materialsNeeded": ["Array of strings for materials.", "e.g., Whiteboard", "Markers"],
-        "udlConnections": ["Array of strings describing connections to UDL principles/checkpoints, if UDL Enhancer is active or relevant.", "e.g., Provides multiple means of representation (visual aids)"],
-        "frameworkTags": ["Array of strings, e.g., 'Bloom:Analyze', 'DOK:3', 'Constructivist:Inquiry'] - tag with relevant framework aspects."
-        Provide a concise "summaryText" like "Suggested X activities for [topic] aligning with [framework]."
+        The "structuredOutput" object MUST have the following structure:
+        {
+          "type": "activity_suggestion_list",
+          "data": [
+            {
+              "title": "Concise activity title.",
+              "description": "Detailed activity description.",
+              "pedagogicalRationale": "Why this activity is effective for learning goals and chosen framework.",
+              "materialsNeeded": ["Array of material strings."],
+              "udlConnections": ["Array of UDL connection strings (if UDL framework active/relevant)."],
+              "frameworkTags": ["Array of tags, e.g., 'Bloom:Analyze', 'DOK:3', 'Constructivist:Inquiry'."],
+              "estimatedTime": "(string, e.g., '30-45 minutes', optional).",
+              "learningContext": "(string, e.g., 'Individual work', 'Group project', 'Whole class discussion', optional).",
+              "explanation": "Additional tips, variations, or pedagogical insights for implementing this activity."
+            }
+          ]
+        }
+        "summaryText" should be concise, e.g., "Suggested X activities for [topic] aligning with [framework], including implementation tips."
+        `;
+    } else if (aiTask === 'refine_objectives') {
+        taskSpecificPrompts = `
+        Task: Refine learning objectives based on user input: "${userQuery}".
+        Apply these preferences:
+        - Number of objectives to generate/refine: ${taskPrefs.objectiveCount || 3}.
+        - Desired format (e.g., SMART): ${taskPrefs.format || 'SMART and framework-aligned'}.
+        - Include a brief explanation for each refined objective, within its object.
+
+        The "structuredOutput" object MUST have the following structure:
+        {
+          "type": "objectives_list",
+          "data": [
+            {
+              "objective": "The refined learning objective text.",
+              "rationale": "Explanation of how this objective was improved or why it's strong.",
+              "frameworkAlignment": "How this objective aligns with the current pedagogical framework (e.g., 'Bloom's: Understand', 'DOK: 2 - Skill/Concept').",
+              "assessmentIdeas": ["Brief ideas on how this objective could be assessed.", "e.g., Short quiz question", "e.g., Observation during activity"]
+            }
+          ]
+        }
+        "summaryText" should be concise, e.g., "Refined X learning objectives for [topic/input]."
+        `;
+    } else if (aiTask === 'summarize_content') {
+        taskSpecificPrompts = `
+        Task: Summarize content. If RAG context is provided, summarize that. Otherwise, summarize user query: "${userQuery}".
+        Apply these preferences:
+        - Desired summary length: ${taskPrefs.summaryLength || 'medium (a few paragraphs)'}.
+        - Number of key points to highlight: ${taskPrefs.keyPoints || 3}.
+        - Add a brief "Further Context" section to the summary explanation.
+
+        The "structuredOutput" object MUST have the following structure:
+        {
+          "type": "simple_text",
+          "data": {
+            "text": "The main summary text here. It can be multi-paragraph and use Markdown. Include a list of key bullet points derived from the preferences. Also, include a 'Further Context' or 'Implications' section after the main summary and key points, providing a little extra insight or related information beyond the direct summary."
+          }
+        }
+        "summaryText" should be concise, e.g., "Summarized the provided content on [topic], highlighting key points and adding context."
         `;
     }
-    // ... ADD MORE ELSE IF FOR OTHER aiTask VALUES ('refine_objectives', 'summarize_content', framework-specific tasks)
-    // EACH MUST DEFINE THE EXPECTED `structuredOutput` type and its fields.
-    else { // Fallback for tasks not yet fully specified
-      taskSpecificPrompts = `
+    // FRAMEWORK-SPECIFIC TASKS
+    else if (aiTask === 'analyze_blooms_coverage' && activeFrameworkId === 'blooms_architect') {
+        taskSpecificPrompts = `
+        Task: Analyze Bloom's Taxonomy coverage for the text provided in user query "${userQuery}" or RAG context.
+        Preferences: Analysis scope - ${taskPrefs.analysisScope || 'provided_text'}, Detail level - ${taskPrefs.detailLevel || 'summary'}.
+        The "structuredOutput" object MUST be:
+        {
+          "type": "blooms_analysis_report", 
+          "data": {
+            "analyzedTextSnippet": "A short snippet of the text analyzed (first ~50 words).",
+            "coverage": { "Remember": 0, "Understand": 0, "Apply": 0, "Analyze": 0, "Evaluate": 0, "Create": 0 }, // Percentage or count
+            "identifiedExamples": [ { "level": "Apply", "exampleSentence": "Sentence demonstrating application..." } ], // Few examples
+            "suggestionsForBalance": "Suggestions to improve Bloom's level distribution if needed.",
+            "overallAssessment": "A brief narrative assessment of the Bloom's coverage."
+          }
+        }
+        "summaryText": "Analyzed Bloom's coverage for the provided text."
+        `;
+    } else if (aiTask === 'check_udl_representation' && activeFrameworkId === 'udl_enhancer') {
+        taskSpecificPrompts = `
+        Task: Analyze UDL (Representation) for user query: "${userQuery}" or RAG context.
+        Preferences: Number of suggestions per checkpoint - ${taskPrefs.suggestionsCount || 2}. Context: ${taskPrefs.analysisContext || 'general educational material'}.
+        The "structuredOutput" object MUST be:
+        {
+          "type": "udl_analysis",
+          "data": {
+            "principle": "Representation",
+            "analysisSummary": "Overall assessment of how well the material supports multiple means of representation.",
+            "checkpointAnalyses": [
+              {
+                "checkpoint": "e.g., 1.1 Offer ways of customizing the display of information",
+                "currentStrengths": ["Identified strengths..."],
+                "areasForImprovement": ["Identified weaknesses..."],
+                "suggestions": ["Concrete suggestion 1...", "Concrete suggestion 2..."],
+                "rationale": "Why these suggestions enhance representation."
+              }
+              // ... more checkpoint analyses
+            ]
+          }
+        }
+        "summaryText": "Provided UDL Representation analysis and suggestions."
+        `;
+    }
+    // Add more "else if" blocks for ALL your other AI tasks and framework combinations.
+    // Each must clearly define the "type" and "data" structure for "structuredOutput".
+    else { 
+        taskSpecificPrompts = `
         Task: ${aiTask}. User Query: "${userQuery}".
-        Preferences: ${JSON.stringify(preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {}, null, 2)}.
-        Please provide a helpful and relevant response. For "structuredOutput", use type "simple_text" with a "text" field containing your main response.
-        "summaryText" should be a brief overview.
+        Preferences: ${JSON.stringify(taskPrefs, null, 2)}.
+        The "structuredOutput" object MUST have the following structure:
+        {
+          "type": "simple_text",
+          "data": { "text": "Your detailed response here. This task may not have a fully specialized output format yet. Please provide a comprehensive textual answer, including any requested explanations or extra information." }
+        }
+        "summaryText" should be a brief overview of the action taken.
         `;
     }
 
@@ -784,148 +885,136 @@ The user's specific preferences for this task, within the current framework, are
     CRITICAL: Your entire response MUST be a single, valid JSON object. Do NOT include any text outside this JSON object.
     The JSON object must have two top-level keys:
     1. "summaryText": (string) A very brief, natural language summary of your response (1-2 sentences). This summary should also briefly mention any extra info or explanations you've included in the structured output.
-    2. "structuredOutput": (object) An object containing the main detailed content. The structure of this object depends on the AI task:
-       - For "${aiTask}": ${taskSpecificPrompts.includes("Output Format for \"structuredOutput\"") ? taskSpecificPrompts.substring(taskSpecificPrompts.indexOf("Output Format for \"structuredOutput\"")) : 'Follow the specific format described in the task instructions above. If task instructions are generic, use {"type": "simple_text", "data": {"text": "Your detailed response here..."}}.'}
+    2. "structuredOutput": (object) An object containing the main detailed content. The structure of this object (specifically its "type" and "data" fields) is defined in the task-specific instructions above. Adhere to that structure precisely.
 
     For any mathematical or chemical equations, use LaTeX notation: $inline$ for inline math and $$block$$ for display math.
-    If the task involves generating content like questions or activities, and you are also providing additional explanations or context related to them, include this extra information *within* the relevant part of the "structuredOutput". For example, a "question_list" item could have an "explanation" field, or an "activity_suggestion_list" item could have a "further_details" field. Make this extra info clearly part of the structured data.
+    If the task involves generating content like questions or activities, and you are also providing additional explanations or context related to them, include this extra information *within* the relevant part of the "structuredOutput.data" fields as specified in the task instructions (e.g., in an "explanation" or "further_details" field within each item of a list).
     Do not use markdown backticks like \`\`\`json ... \`\`\` to wrap the JSON.
     `;
 
-    const fullPromptForLLM = `${systemInstruction}\n\n${taskSpecificPrompts}\n\n${ragContextString ? `Relevant Context from Teacher's Materials (Prioritize this if relevant):\n${ragContextString}\nEND OF TEACHER'S MATERIALS\n\n` : "No specific teacher materials were selected for RAG context.\n\n"}${outputFormatInstruction}`;
-
-    console.log("  Full Prompt for LLM (first 500 chars):", fullPromptForLLM.substring(0, 500) + "...");
-    // console.log("Full prompt for LLM:", fullPromptForLLM); // For debugging full prompt
+    const fullPromptForLLM = `${systemInstruction}\n\n${taskSpecificPrompts}\n\n${ragContextString ? `Relevant Context from Teacher's Uploaded Materials (Prioritize this if relevant):\n${ragContextString}\nEND OF TEACHER'S MATERIALS\n\n` : "No specific teacher materials were selected for RAG context.\n\n"}${outputFormatInstruction}`;
+    
+    console.log("  Full Prompt for LLM (first 500 chars):", fullPromptForLLM.substring(0,500) + (fullPromptForLLM.length > 500 ? "..." : ""));
+    // For deep debugging: console.log("Full prompt for LLM:", fullPromptForLLM);
 
     let llmApiResponseText;
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // or gemini-pro
-      const result = await model.generateContent(fullPromptForLLM);
-      llmApiResponseText = result.response.text();
-      console.log("  LLM Raw Response (first 500 chars):", llmApiResponseText.substring(0, 500) + "...");
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const result = await model.generateContent(fullPromptForLLM); // No specific generationConfig for JSON as prompt is key
+        llmApiResponseText = result.response.text();
+        console.log("  LLM Raw Response (first 500 chars):", llmApiResponseText.substring(0,500) + (llmApiResponseText.length > 500 ? "..." : ""));
     } catch (llmError) {
-      console.error("!!!! LLM API Call Error:", llmError);
-      let errorMessage = `AI model communication failed.`;
-      if (llmError.message) errorMessage += ` Details: ${llmError.message}`;
-      if (String(llmError).includes("SAFETY")) errorMessage = "AI response blocked by safety filters. Please rephrase or adjust content.";
-      throw new Error(errorMessage);
+        console.error("!!!! LLM API Call Error:", llmError);
+        let errorMessage = `AI model communication failed.`;
+        if (llmError.message) errorMessage += ` Details: ${llmError.message}`;
+        if (String(llmError).includes("SAFETY") || (llmError.response && String(llmError.response.promptFeedback?.blockReason).includes("SAFETY"))) {
+            errorMessage = "AI response blocked by safety filters. Please rephrase or adjust content.";
+        }
+        throw new Error(errorMessage);
     }
 
     let parsedAiResponse;
     try {
-      let jsonString = llmApiResponseText.trim();
-      // Enhanced stripping of markdown fences (more robust)
-      if (jsonString.startsWith("```json") && jsonString.endsWith("```")) {
-        jsonString = jsonString.substring(7, jsonString.length - 3).trim();
-      } else if (jsonString.startsWith("```") && jsonString.endsWith("```")) {
-        jsonString = jsonString.substring(3, jsonString.length - 3).trim();
-      }
+        let jsonString = llmApiResponseText.trim();
+        if (jsonString.startsWith("```json") && jsonString.endsWith("```")) {
+            jsonString = jsonString.substring(7, jsonString.length - 3).trim();
+        } else if (jsonString.startsWith("```") && jsonString.endsWith("```")) {
+             jsonString = jsonString.substring(3, jsonString.length - 3).trim();
+        }
+        
+        parsedAiResponse = JSON.parse(jsonString);
 
-      parsedAiResponse = JSON.parse(jsonString);
-
-      if (typeof parsedAiResponse.summaryText !== 'string' || typeof parsedAiResponse.structuredOutput === 'undefined') {
-        console.warn("LLM response parsed but missing required keys. Fallback. Raw JSON:", jsonString.substring(0, 300));
-        parsedAiResponse = {
-          summaryText: parsedAiResponse.summaryText || "AI response structure was incomplete. See details or retry.",
-          structuredOutput: parsedAiResponse.structuredOutput || { type: "simple_text", data: { text: "Structured output missing/malformed. Raw was: " + jsonString } }
-        };
-      }
+        if (typeof parsedAiResponse.summaryText !== 'string' || typeof parsedAiResponse.structuredOutput?.type !== 'string' || typeof parsedAiResponse.structuredOutput?.data === 'undefined') {
+            console.warn("LLM response parsed but missing required keys (summaryText, structuredOutput.type, or structuredOutput.data). Fallback. Raw JSON:", jsonString.substring(0, 300));
+            parsedAiResponse = { 
+                summaryText: parsedAiResponse.summaryText || "AI response structure was incomplete. Please see details or retry.",
+                structuredOutput: { 
+                    type: parsedAiResponse.structuredOutput?.type || "error_malformed", // Keep original type if present
+                    data: parsedAiResponse.structuredOutput?.data || { text: "Structured output missing or malformed. Raw was: " + jsonString } 
+                }
+            };
+             if (parsedAiResponse.structuredOutput.type === "error_malformed" && !parsedAiResponse.structuredOutput.data.text.includes("Raw was:")) {
+                // If it was already an object but just missing type/data, preserve its original structure under data.
+                parsedAiResponse.structuredOutput.data = { originalOutput: parsedAiResponse.structuredOutput, error: "Missing type/data keys. Raw JSON was: " + jsonString };
+            }
+        }
     } catch (parseError) {
       console.error("!!!! LLM JSON Parse Error:", parseError.message);
       console.error("Raw LLM Response that failed parsing:\n", llmApiResponseText);
-      // Provide a more user-friendly error in the structuredOutput
       parsedAiResponse = {
         summaryText: "AI response format error. The AI's output was not valid JSON.",
-        structuredOutput: { type: "simple_text", data: { text: `**Technical Error:** The AI's response could not be understood by the system (JSON parse failed: ${parseError.message}).\n\n<details><summary>View Raw AI Output (for debugging)</summary><pre>${llmApiResponseText.replace(/</g, "<").replace(/>/g, ">")}</pre></details>` } }
+        structuredOutput: { type: "error_parsing", data: { text: `**Technical Error:** The AI's response could not be understood by the system (JSON parse failed: ${parseError.message}).\n\n<details><summary>View Raw AI Output (for debugging)</summary><pre class="whitespace-pre-wrap break-all">${llmApiResponseText.replace(/</g, "<").replace(/>/g, ">")}</pre></details>` }}
       };
     }
-
-    // --- Save/Update Chat History ---
-    const userMessageEntry = {
-      role: "user",
-      userQuery: userQuery, // Prisma schema uses 'userQuery' for user messages
-      // attachments: if handling one-time attachments, store their metadata here
-      timestamp: new Date().toISOString(),
-      // Store user's active settings for this turn for potential future context or display
-      activeFrameworkIdForTurn: activeFrameworkId,
-      aiTaskForTurn: aiTask,
-      preferencesForTurn: preferences,
+    
+    const userMessageEntry = { 
+      role: "user", userQuery: userQuery, timestamp: new Date().toISOString(),
+      activeFrameworkIdForTurn: activeFrameworkId, aiTaskForTurn: aiTask, preferencesForTurn: preferences,
     };
-    const assistantMessageEntry = {
-      role: "assistant",
-      summaryText: parsedAiResponse.summaryText,
+    const assistantMessageEntry = { 
+      role: "assistant", summaryText: parsedAiResponse.summaryText,
       structuredContent: parsedAiResponse.structuredOutput,
-      usedSources: usedSourceDetails,
-      aiTaskType: aiTask, // The task that generated this response
-      timestamp: new Date().toISOString()
+      usedSources: usedSourceDetails, aiTaskType: aiTask, timestamp: new Date().toISOString() 
     };
-
+    
     let finalChatHistoryId = chatHistoryId;
-    let finalChatTitle = "";
+    let finalChatTitle = ""; 
     const currentFrameworkLabel = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId)?.label || activeFrameworkId.replace(/_/g, ' ');
-    const currentTaskLabel = aiTasksConfig[activeFrameworkId]?.find(t => t.id === aiTask)?.label || aiTasksConfig.common.find(t => t.id === aiTask)?.label || aiTask.replace(/_/g, ' ');
+    const currentTaskConfig = aiTasksConfig[activeFrameworkId]?.find(t => t.id === aiTask) || aiTasksConfig.common.find(t => t.id === aiTask);
+    const currentTaskLabel = currentTaskConfig?.label || aiTask.replace(/_/g, ' ');
 
     if (finalChatHistoryId) {
-      const existingChat = await prisma.chatHistory.findUnique({ where: { id: finalChatHistoryId, userId: user.id } });
-      if (existingChat) {
-        const updatedMessages = Array.isArray(existingChat.messages)
-          ? [...existingChat.messages, userMessageEntry, assistantMessageEntry]
-          : [userMessageEntry, assistantMessageEntry];
-        const updatedChat = await prisma.chatHistory.update({
-          where: { id: finalChatHistoryId },
-          data: {
-            messages: updatedMessages,
-            lastPreferences: preferences,
-            activeContextItems: activeContextItems || [],
-            frameworkId: activeFrameworkId, // Update if framework changed mid-session
-            updatedAt: new Date()
-          },
+        const existingChat = await prisma.chatHistory.findUnique({ where: { id: finalChatHistoryId, userId: user.id } });
+        if (existingChat) {
+            const updatedMessages = Array.isArray(existingChat.messages) 
+                ? [...existingChat.messages, userMessageEntry, assistantMessageEntry] 
+                : [userMessageEntry, assistantMessageEntry];
+            const updatedChat = await prisma.chatHistory.update({
+                where: { id: finalChatHistoryId },
+                data: {
+                    messages: updatedMessages, lastPreferences: preferences, 
+                    activeContextItems: activeContextItems || [], frameworkId: activeFrameworkId, updatedAt: new Date()
+                },
+            });
+            finalChatTitle = updatedChat.customTitle || `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0,20)}...)`;
+        } else { 
+            console.warn(`ChatHistory ID ${finalChatHistoryId} not found for user ${user.id}. Creating new chat.`);
+            finalChatHistoryId = null;
+        } 
+    }
+    
+    if (!finalChatHistoryId) {
+        finalChatTitle = `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0,20)}...)`;
+        const generalPrefs = preferences?.[activeFrameworkId] || preferences || {};
+        const subject = generalPrefs.subject || currentFrameworkLabel;
+        const classLevel = generalPrefs.classLevel || "General";
+        const chapter = generalPrefs.chapter || userQuery.substring(0,50);
+
+        const newChat = await prisma.chatHistory.create({
+            data: {
+                userId: user.id, messages: [userMessageEntry, assistantMessageEntry],
+                customTitle: finalChatTitle, frameworkId: activeFrameworkId,
+                subject: subject, class: classLevel, chapter: chapter,
+                lastPreferences: preferences, activeContextItems: activeContextItems || [],
+            }
         });
-        finalChatTitle = updatedChat.customTitle || `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0, 20)}...)`;
-      } else {
-        console.warn(`ChatHistory ID ${finalChatHistoryId} not found for user ${user.id}. Creating new chat.`);
-        finalChatHistoryId = null; // Force new chat creation
-      }
+        finalChatHistoryId = newChat.id;
     }
-
-    if (!finalChatHistoryId) { // Create new chat history
-      finalChatTitle = `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0, 20)}...)`;
-      // Attempt to get subject/class/chapter from preferences for better default categorization
-      const generalPrefs = preferences?.[activeFrameworkId] || preferences || {};
-      const subject = generalPrefs.subject || currentFrameworkLabel;
-      const classLevel = generalPrefs.classLevel || "General";
-      const chapter = generalPrefs.chapter || userQuery.substring(0, 50);
-
-      const newChat = await prisma.chatHistory.create({
-        data: {
-          userId: user.id,
-          messages: [userMessageEntry, assistantMessageEntry],
-          customTitle: finalChatTitle,
-          frameworkId: activeFrameworkId,
-          subject: subject,
-          class: classLevel,
-          chapter: chapter,
-          lastPreferences: preferences,
-          activeContextItems: activeContextItems || [],
-        }
-      });
-      finalChatHistoryId = newChat.id;
-    }
-
+    
     console.log(`  Chat interaction saved/updated. History ID: ${finalChatHistoryId}. Title: ${finalChatTitle}`);
-    res.status(200).json({
-      summaryText: parsedAiResponse.summaryText,
-      structuredOutput: parsedAiResponse.structuredOutput,
-      chatHistoryId: finalChatHistoryId,
+    res.status(200).json({ 
+      summaryText: parsedAiResponse.summaryText, 
+      structuredOutput: parsedAiResponse.structuredOutput, 
+      chatHistoryId: finalChatHistoryId, 
       usedSources: usedSourceDetails,
-      chatTitle: finalChatTitle // Send back the potentially updated/new title
+      chatTitle: finalChatTitle 
     });
 
   } catch (error) {
     console.error("!!!! AI Pedagogy Assist Endpoint CRITICAL Error:", error);
-    res.status(500).json({
-      error: "Failed to process AI co-pilot request.",
-      message: error.message || "Unknown server error."
+    res.status(500).json({ 
+        error: "Failed to process AI co-pilot request.",
+        message: error.message || "Unknown server error." 
     });
   }
 });
