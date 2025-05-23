@@ -1,3 +1,5 @@
+// src/pages/TeachersDashboard.jsx
+
 import React, { useState, useContext } from 'react'; // Added useContext
 import Navbar from '@/components/Navbar';
 // import Footer from '@/components/Footer'; // Optional: remove if dashboard doesn't need a full footer

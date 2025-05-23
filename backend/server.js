@@ -32,6 +32,7 @@ const PORT = process.env.PORT || 5000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads/';
 const UPLOAD_DIR_FULL_PATH = path.join(__dirname, UPLOAD_DIR);
 
+// Pedagogical frameworks config (should match frontend)
 const pedagogicalFrameworksConfig = [
   { id: 'blooms_architect', label: "Bloom's Architect" },
   { id: 'dok_navigator', label: "DOK Navigator" },
@@ -39,6 +40,21 @@ const pedagogicalFrameworksConfig = [
   { id: 'constructivist_spark', label: "Constructivist Spark" },
   { id: 'combine_conquer', label: "Combine & Conquer" },
 ];
+// AI Tasks config (should match frontend for prompt engineering)
+const aiTasksConfig = {
+  common: [
+    { id: 'generate_questions', label: 'Generate Questions' },
+    { id: 'suggest_activities', label: 'Suggest Activities' },
+    { id: 'refine_objectives', label: 'Refine Learning Objectives' },
+    { id: 'summarize_content', label: 'Summarize Content' }
+  ],
+  blooms_architect: [{ id: 'analyze_blooms_coverage', label: "Analyze Bloom's Coverage" },],
+  dok_navigator: [{ id: 'analyze_dok_level', label: "Analyze DOK Level" }, { id: 'suggest_dok_rigor_up', label: "Increase DOK Rigor" },],
+  udl_enhancer: [{ id: 'check_udl_representation', label: "Check UDL: Representation" }, { id: 'check_udl_action', label: "Check UDL: Action/Expression" }, { id: 'check_udl_engagement', label: "Check UDL: Engagement" },],
+  constructivist_spark: [{ id: 'generate_inquiry_prompts', label: "Generate Inquiry Prompts" }],
+  combine_conquer: [{ id: 'integrate_frameworks_advice', label: "Advise on Framework Integration" }]
+};
+
 
 // --- Global Middleware ---
 app.use(cors());
@@ -49,23 +65,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use((req, res, next) => {
   console.log(`\n--- Incoming Request ---`);
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  if (req.query && Object.keys(req.query).length > 0) {
-    console.log("Request Query:", req.query);
-  }
-  if (req.path !== '/webhook/user' && req.body && Object.keys(req.body).length > 0) {
+  if (req.query && Object.keys(req.query).length > 0) console.log("Request Query:", req.query);
+  if (req.path !== '/webhook/user' && req.body && Object.keys(req.body).length > 0 && req.method !== 'POST' && req.path !== '/api/teacher/upload-material') {
     try {
       console.log("Request Body (parsed):", JSON.stringify(req.body, null, 2).substring(0, 500) + (JSON.stringify(req.body).length > 500 ? "..." : ""));
-    } catch (e) {
-      console.log("Request Body: (Could not stringify JSON body)");
-    }
-  } else if (req.path !== '/webhook/user' && ['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())) {
-    console.log(`Request Body for ${req.method} ${req.path}: (empty or not parsed as JSON object)`);
+    } catch (e) { console.log("Request Body: (Could not stringify JSON body)"); }
+  } else if (req.path !== '/webhook/user' && req.path !== '/api/teacher/upload-material' && ['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())) {
+    console.log(`Request Body for ${req.method} ${req.path}: (empty, form-data, or not parsed as JSON object)`);
   }
   console.log("--- End Incoming Request ---");
   next();
 });
 
-// --- File Upload Setup ---
 const ensureUploadDirExists = async () => {
   try { await fs.mkdir(UPLOAD_DIR_FULL_PATH, { recursive: true }); console.log(`Upload dir '${UPLOAD_DIR_FULL_PATH}' ensured.`); }
   catch (error) { console.error(`Error creating upload dir '${UPLOAD_DIR_FULL_PATH}':`, error); }
@@ -80,14 +91,14 @@ const storage = multer.diskStorage({
     cb(null, `${uniqueSuffix}-${cleanOriginalName.substring(0, 100)}`);
   }
 });
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // For dashboard uploads
 
 // --- AI and Vector DB Clients ---
 if (!process.env.GOOGLE_GEMINI_API_KEY) { console.error("CRITICAL: GOOGLE_GEMINI_API_KEY not set!"); process.exit(1); }
 if (!process.env.QDRANT_URL) { console.error("CRITICAL: QDRANT_URL not set!"); process.exit(1); }
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
-const embeddings = new GoogleGenerativeAIEmbeddings({ apiKey: process.env.GOOGLE_GEMINI_API_KEY, model: "embedding-001" });
+const embeddings = new GoogleGenerativeAIEmbeddings({ apiKey: process.env.GOOGLE_GEMINI_API_KEY, model: "embedding-001" }); // Ensure this model matches vector size
 const qdrantClient = new QdrantClient({ url: process.env.QDRANT_URL, apiKey: process.env.QDRANT_API_KEY || undefined });
 
 // --- Helper Functions ---
@@ -101,29 +112,28 @@ async function getUserByClerkId(clerkId) {
 }
 
 async function loadFileContentForRAG(filePathOnServer, fileType) {
-    console.log(`Attempting to load content from: ${filePathOnServer} (type: ${fileType})`);
-    try {
-        await fs.access(filePathOnServer); // Check if file exists before attempting to load
-        const lowerCaseFileType = fileType.toLowerCase();
-        let documents;
-        if (lowerCaseFileType === 'application/pdf') {
-            const loader = new PDFLoader(filePathOnServer);
-            documents = await loader.load();
-        } else if (lowerCaseFileType.includes('officedocument.wordprocessingml.document') || lowerCaseFileType === 'application/msword') {
-            const loader = new DocxLoader(filePathOnServer);
-            documents = await loader.load();
-        } else if (lowerCaseFileType === 'text/plain') {
-            const loader = new LangchainTextLoader(filePathOnServer);
-            documents = await loader.load();
-        } else {
-            console.warn(`Unsupported file type for RAG content loading: ${fileType} at ${filePathOnServer}`);
-            return null;
-        }
-        return documents.map(doc => doc.pageContent).join("\n\n");
-    } catch (error) {
-        console.error(`Error loading file content from ${filePathOnServer}:`, error);
-        return null;
+  console.log(`RAG Content Load: Attempting from ${filePathOnServer} (type: ${fileType})`);
+  try {
+    await fs.access(filePathOnServer);
+    const lowerCaseFileType = fileType.toLowerCase();
+    let documents;
+    if (lowerCaseFileType === 'application/pdf') {
+      const loader = new PDFLoader(filePathOnServer); documents = await loader.load();
+    } else if (lowerCaseFileType.includes('officedocument.wordprocessingml.document') || lowerCaseFileType === 'application/msword') {
+      const loader = new DocxLoader(filePathOnServer); documents = await loader.load();
+    } else if (lowerCaseFileType === 'text/plain') {
+      const loader = new LangchainTextLoader(filePathOnServer); documents = await loader.load();
+    } else {
+      console.warn(`RAG Content Load: Unsupported file type: ${fileType} at ${filePathOnServer}`);
+      return null;
     }
+    const content = documents.map(doc => doc.pageContent).join("\n\n");
+    console.log(`RAG Content Load: Successfully loaded ${content.length} chars from ${filePathOnServer}`);
+    return content;
+  } catch (error) {
+    console.error(`RAG Content Load: Error loading file content from ${filePathOnServer}:`, error);
+    return null;
+  }
 }
 
 // --- RAG Ingestion Logic (processAndVectorizeFile) ---
@@ -172,21 +182,21 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
     const chunksWithMetadata = splitDocs.map((doc, index) => ({
       ...doc,
       metadata: {
-        ...doc.metadata, 
-        source_filename: fileRecord.fileName, 
-        file_id_db: fileRecord.id, 
+        ...doc.metadata,
+        source_filename: fileRecord.fileName,
+        file_id_db: fileRecord.id,
         user_id_db: internalUserId, // Internal DB user ID
-        subject: fileRecord.subject || 'general', 
+        subject: fileRecord.subject || 'general',
         class_level: fileRecord.classLevel || 'general',
-        chapter: fileRecord.chapter || 'general', 
+        chapter: fileRecord.chapter || 'general',
         category: fileRecord.category || 'general_upload',
-        year: fileRecord.year?.toString() || undefined, 
+        year: fileRecord.year?.toString() || undefined,
         exam_type: fileRecord.examType || undefined,
         doc_type: 'uploaded_file', // Differentiate from 'note' type if you vectorize notes
         chunk_index: index,
       }
     }));
-    
+
     console.log(`${logPrefix} Metadata added to ${chunksWithMetadata.length} chunks.`);
 
     // Ensure Qdrant collection exists
@@ -197,11 +207,11 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
       const qdrantError = error;
       if (qdrantError.status === 404 || (qdrantError.code && qdrantError.code === 5)) { // Qdrant's typical "not found" status/code
         console.log(`${logPrefix} Qdrant collection '${collectionName}' not found, creating...`);
-        await qdrantClient.createCollection(collectionName, { 
-            vectors: { size: 768, distance: 'Cosine' } // Match GoogleGenerativeAIEmbeddings size
+        await qdrantClient.createCollection(collectionName, {
+          vectors: { size: 768, distance: 'Cosine' } // Match GoogleGenerativeAIEmbeddings size
         });
         console.log(`${logPrefix} Qdrant collection '${collectionName}' created.`);
-      } else { 
+      } else {
         console.error(`${logPrefix} Error checking/creating Qdrant collection '${collectionName}':`, qdrantError);
         throw qdrantError; // Propagate other Qdrant errors
       }
@@ -211,7 +221,7 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
     const qdrantStore = new QdrantVectorStore(embeddings, { client: qdrantClient, collectionName });
     console.log(`${logPrefix} Attempting to add ${chunksWithMetadata.length} document chunks to Qdrant...`);
     const addedIdsFromStore = await qdrantStore.addDocuments(chunksWithMetadata);
-    qdrantOperationSuccessful = true; 
+    qdrantOperationSuccessful = true;
     console.log(`${logPrefix} Documents added to Qdrant. Response (IDs):`, addedIdsFromStore);
 
 
@@ -220,12 +230,12 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
 
     await prisma.uploadedFile.update({
       where: { id: fileRecord.id },
-      data: { 
-        processed: true, 
-        isVectorized: true, 
+      data: {
+        processed: true,
+        isVectorized: true,
         qdrantIds: finalQdrantIds, // Store the Qdrant point IDs if returned
         qdrantCollection: collectionName,
-        notes: successNote 
+        notes: successNote
       },
     });
     console.log(`${logPrefix} SUCCESS: File processing marked as complete in DB for ${fileRecord.fileName}.`);
@@ -233,15 +243,15 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
   } catch (error) {
     console.error(`${logPrefix} OVERALL ERROR during vectorization pipeline for ${fileRecord.fileName}:`, error);
     try {
-        const existingRecord = await prisma.uploadedFile.findUnique({ where: { id: fileRecord.id } });
-        if (existingRecord && !existingRecord.isVectorized) { // Only update if not already marked successful
-            await prisma.uploadedFile.update({
-                where: { id: fileRecord.id },
-                data: { processed: true, isVectorized: false, notes: `Vectorization pipeline error: ${String(error.message || error).substring(0, 250)}` },
-            });
-        }
+      const existingRecord = await prisma.uploadedFile.findUnique({ where: { id: fileRecord.id } });
+      if (existingRecord && !existingRecord.isVectorized) { // Only update if not already marked successful
+        await prisma.uploadedFile.update({
+          where: { id: fileRecord.id },
+          data: { processed: true, isVectorized: false, notes: `Vectorization pipeline error: ${String(error.message || error).substring(0, 250)}` },
+        });
+      }
     } catch (dbUpdateError) {
-        console.error(`${logPrefix} FATAL: Could not update DB record on vectorization error:`, dbUpdateError);
+      console.error(`${logPrefix} FATAL: Could not update DB record on vectorization error:`, dbUpdateError);
     }
   } finally {
     try {
@@ -249,7 +259,7 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
       await fs.unlink(filePathFromMulter);
       console.log(`${logPrefix} CLEANUP: Deleted temporary file: ${filePathFromMulter}`);
     } catch (unlinkError) {
-      if (unlinkError.code !== 'ENOENT') { 
+      if (unlinkError.code !== 'ENOENT') {
         console.warn(`${logPrefix} CLEANUP WARNING during unlink of ${filePathFromMulter}:`, unlinkError.message);
       }
     }
@@ -259,102 +269,102 @@ async function processAndVectorizeFile(filePathFromMulter, fileRecord, internalU
 
 // --- CLERK WEBHOOK HANDLER ---
 app.post("/webhook/user", express.raw({ type: 'application/json' }), async (req, res) => {
-    console.log("--- Webhook /webhook/user hit ---");
-    const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-    if (!WEBHOOK_SECRET) { console.error("CRITICAL: Missing WEBHOOK_SECRET from .env file!"); return res.status(500).send("Server misconfig: WEBHOOK_SECRET not configured."); }
+  console.log("--- Webhook /webhook/user hit ---");
+  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+  if (!WEBHOOK_SECRET) { console.error("CRITICAL: Missing WEBHOOK_SECRET from .env file!"); return res.status(500).send("Server misconfig: WEBHOOK_SECRET not configured."); }
 
-    const svix_id = req.headers["svix-id"], svix_timestamp = req.headers["svix-timestamp"], svix_signature = req.headers["svix-signature"];
-    if (!svix_id || !svix_timestamp || !svix_signature) { console.error("Webhook Error: Missing Svix headers from incoming request."); return res.status(400).send("Missing Svix headers"); }
+  const svix_id = req.headers["svix-id"], svix_timestamp = req.headers["svix-timestamp"], svix_signature = req.headers["svix-signature"];
+  if (!svix_id || !svix_timestamp || !svix_signature) { console.error("Webhook Error: Missing Svix headers from incoming request."); return res.status(400).send("Missing Svix headers"); }
 
-    const wh = new Webhook(WEBHOOK_SECRET);
-    let evt;
-    try {
-        const payloadString = req.body.toString('utf8');
-        evt = wh.verify(payloadString, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
-        console.log("Webhook verified successfully. Event type:", evt.type);
-    } catch (err) {
-        console.error("!!! Svix verification failed:", err.message);
-        console.error("WEBHOOK_SECRET used (first 5 chars for check):", WEBHOOK_SECRET.substring(0,5) + "...");
-        return res.status(400).send("Webhook signature verification failed");
-    }
+  const wh = new Webhook(WEBHOOK_SECRET);
+  let evt;
+  try {
+    const payloadString = req.body.toString('utf8');
+    evt = wh.verify(payloadString, { "svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature });
+    console.log("Webhook verified successfully. Event type:", evt.type);
+  } catch (err) {
+    console.error("!!! Svix verification failed:", err.message);
+    console.error("WEBHOOK_SECRET used (first 5 chars for check):", WEBHOOK_SECRET.substring(0, 5) + "...");
+    return res.status(400).send("Webhook signature verification failed");
+  }
 
-    const eventType = evt.type;
-    const eventData = evt.data;
+  const eventType = evt.type;
+  const eventData = evt.data;
 
-    try {
-        if (eventType === "user.created" || eventType === "user.updated") {
-            const { id: clerkUserId, email_addresses, primary_email_address_id, first_name, last_name, image_url } = eventData;
-            const primaryEmailObj = Array.isArray(email_addresses) ? email_addresses.find(e => e.id === primary_email_address_id) : null;
-            const email = primaryEmailObj?.email_address || `no-email-${clerkUserId}@example.com`;
-            const name = [first_name, last_name].filter(Boolean).join(" ") || "Unnamed User";
-            
-            console.log(`Webhook: Processing ${eventType} for Clerk ID: ${clerkUserId} (Email: ${email}, Name: ${name})`);
+  try {
+    if (eventType === "user.created" || eventType === "user.updated") {
+      const { id: clerkUserId, email_addresses, primary_email_address_id, first_name, last_name, image_url } = eventData;
+      const primaryEmailObj = Array.isArray(email_addresses) ? email_addresses.find(e => e.id === primary_email_address_id) : null;
+      const email = primaryEmailObj?.email_address || `no-email-${clerkUserId}@example.com`;
+      const name = [first_name, last_name].filter(Boolean).join(" ") || "Unnamed User";
 
-            const userData = {
-                email,
-                name,
-                // imageUrl: image_url, // You can store this if you have an imageUrl field in your User model
-            };
+      console.log(`Webhook: Processing ${eventType} for Clerk ID: ${clerkUserId} (Email: ${email}, Name: ${name})`);
 
-            if (eventType === "user.created") {
-                const existingUser = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
-                if (existingUser) {
-                    console.log(`Webhook: User ${clerkUserId} already exists. Updating details.`);
-                    await prisma.user.update({ where: { clerkId: clerkUserId }, data: userData });
-                } else {
-                    console.log(`Webhook: Attempting to create user ${clerkUserId} in DB.`);
-                    await prisma.user.create({ data: { clerkId: clerkUserId, ...userData, role: 'TEACHER' } }); // department/institution are optional & nullable
-                    console.log(`✅ Webhook: User created in DB: ${clerkUserId}`);
-                }
-            } else { // user.updated
-                console.log(`Webhook: Attempting to upsert user ${clerkUserId} in DB.`);
-                await prisma.user.upsert({
-                    where: { clerkId: clerkUserId },
-                    update: userData,
-                    create: { clerkId: clerkUserId, ...userData, role: 'TEACHER' },
-                });
-                console.log(`✏️ Webhook: User updated/ensured in DB: ${clerkUserId}`);
-            }
-        } else if (eventType === "user.deleted") {
-             const { id: clerkUserId, deleted } = eventData; // `deleted` boolean might be present
-            if (clerkUserId) { // Check if id exists, even if deleted might be false
-                console.log(`Webhook: Processing user.deleted for Clerk ID: ${clerkUserId}`);
-                const userRecord = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
-                if (userRecord) {
-                    const collectionName = `teacher_${userRecord.id}_materials`;
-                    try {
-                        console.log(`Webhook: Attempting to delete Qdrant collection: ${collectionName}`);
-                        await qdrantClient.deleteCollection(collectionName);
-                        console.log(`Webhook: Qdrant collection ${collectionName} deleted for user ${userRecord.id}`);
-                    } catch (qError) {
-                        if (qError.status !== 404 && !(qError.message && qError.message.includes("doesn't exist"))) {
-                            console.error(`Webhook: Error deleting Qdrant collection ${collectionName}:`, qError);
-                        } else {
-                            console.log(`Webhook: Qdrant collection ${collectionName} not found or indicates non-existence, skipping deletion.`);
-                        }
-                    }
-                    // Cascade delete related records or handle them as per your app's logic
-                    // For example, delete chat history, notes, uploaded files, preferences
-                    await prisma.chatHistory.deleteMany({ where: { userId: userRecord.id } });
-                    await prisma.note.deleteMany({ where: { userId: userRecord.id } });
-                    await prisma.uploadedFile.deleteMany({ where: { uploadedById: userRecord.id } }); // Ensure field name matches
-                    await prisma.teacherPreference.deleteMany({ where: { userId: userRecord.id } });
-                    // Add other related data deletions here
-                }
-                const numDeleted = await prisma.user.deleteMany({ where: { clerkId: clerkUserId } });
-                if (numDeleted.count > 0) console.log(`🗑️ Webhook: User and related data deleted from DB: ${clerkUserId}`);
-                else console.log(`Webhook: User ${clerkUserId} not found in DB for deletion, or already deleted.`);
-            } else {
-                 console.warn(`Webhook: Received user.deleted event without a clerkUserId in data.id.`);
-            }
-        } else { 
-            console.log(`Webhook: Received (and ignored) event type: ${eventType}`); 
+      const userData = {
+        email,
+        name,
+        // imageUrl: image_url, // You can store this if you have an imageUrl field in your User model
+      };
+
+      if (eventType === "user.created") {
+        const existingUser = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
+        if (existingUser) {
+          console.log(`Webhook: User ${clerkUserId} already exists. Updating details.`);
+          await prisma.user.update({ where: { clerkId: clerkUserId }, data: userData });
+        } else {
+          console.log(`Webhook: Attempting to create user ${clerkUserId} in DB.`);
+          await prisma.user.create({ data: { clerkId: clerkUserId, ...userData, role: 'TEACHER' } }); // department/institution are optional & nullable
+          console.log(`✅ Webhook: User created in DB: ${clerkUserId}`);
         }
-        res.status(200).json({ message: "Webhook processed successfully" });
-    } catch (dbError) { 
-        console.error(`!!! Webhook DB Error during ${eventType} for ClerkID ${eventData?.id || 'N/A'}:`, dbError); 
-        res.status(500).json({ error: `Database error processing webhook event: ${dbError.message}` }); 
+      } else { // user.updated
+        console.log(`Webhook: Attempting to upsert user ${clerkUserId} in DB.`);
+        await prisma.user.upsert({
+          where: { clerkId: clerkUserId },
+          update: userData,
+          create: { clerkId: clerkUserId, ...userData, role: 'TEACHER' },
+        });
+        console.log(`✏️ Webhook: User updated/ensured in DB: ${clerkUserId}`);
+      }
+    } else if (eventType === "user.deleted") {
+      const { id: clerkUserId, deleted } = eventData; // `deleted` boolean might be present
+      if (clerkUserId) { // Check if id exists, even if deleted might be false
+        console.log(`Webhook: Processing user.deleted for Clerk ID: ${clerkUserId}`);
+        const userRecord = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
+        if (userRecord) {
+          const collectionName = `teacher_${userRecord.id}_materials`;
+          try {
+            console.log(`Webhook: Attempting to delete Qdrant collection: ${collectionName}`);
+            await qdrantClient.deleteCollection(collectionName);
+            console.log(`Webhook: Qdrant collection ${collectionName} deleted for user ${userRecord.id}`);
+          } catch (qError) {
+            if (qError.status !== 404 && !(qError.message && qError.message.includes("doesn't exist"))) {
+              console.error(`Webhook: Error deleting Qdrant collection ${collectionName}:`, qError);
+            } else {
+              console.log(`Webhook: Qdrant collection ${collectionName} not found or indicates non-existence, skipping deletion.`);
+            }
+          }
+          // Cascade delete related records or handle them as per your app's logic
+          // For example, delete chat history, notes, uploaded files, preferences
+          await prisma.chatHistory.deleteMany({ where: { userId: userRecord.id } });
+          await prisma.note.deleteMany({ where: { userId: userRecord.id } });
+          await prisma.uploadedFile.deleteMany({ where: { uploadedById: userRecord.id } }); // Ensure field name matches
+          await prisma.teacherPreference.deleteMany({ where: { userId: userRecord.id } });
+          // Add other related data deletions here
+        }
+        const numDeleted = await prisma.user.deleteMany({ where: { clerkId: clerkUserId } });
+        if (numDeleted.count > 0) console.log(`🗑️ Webhook: User and related data deleted from DB: ${clerkUserId}`);
+        else console.log(`Webhook: User ${clerkUserId} not found in DB for deletion, or already deleted.`);
+      } else {
+        console.warn(`Webhook: Received user.deleted event without a clerkUserId in data.id.`);
+      }
+    } else {
+      console.log(`Webhook: Received (and ignored) event type: ${eventType}`);
     }
+    res.status(200).json({ message: "Webhook processed successfully" });
+  } catch (dbError) {
+    console.error(`!!! Webhook DB Error during ${eventType} for ClerkID ${eventData?.id || 'N/A'}:`, dbError);
+    res.status(500).json({ error: `Database error processing webhook event: ${dbError.message}` });
+  }
 });
 
 
@@ -368,17 +378,17 @@ apiRouter.post("/teacher/upload-material", upload.single('file'), async (req, re
   if (!clerkId) { if (req.file?.path) await fs.unlink(req.file.path).catch(console.error); return res.status(400).json({ error: "Clerk ID required." }); }
   const user = await getUserByClerkId(clerkId);
   if (!user) { if (req.file?.path) await fs.unlink(req.file.path).catch(console.error); return res.status(404).json({ error: "User not found." }); }
-  
+
   try {
     const fileRecord = await prisma.uploadedFile.create({
       data: {
-        fileName: req.file.originalname, fileType: req.file.mimetype, 
+        fileName: req.file.originalname, fileType: req.file.mimetype,
         fileUrl: req.file.path, // Storing the server path from multer
         fileSize: req.file.size,
-        uploadedById: user.id, 
-        subject: subject || null, classLevel: classLevel || null, chapter: chapter || null, 
+        uploadedById: user.id,
+        subject: subject || null, classLevel: classLevel || null, chapter: chapter || null,
         institution: institution || null, department: department || null, courseCode: courseCode || null,
-        category: category || 'general_upload', 
+        category: category || 'general_upload',
         year: year ? parseInt(year) : null, examType: examType || null,
         processed: false, isVectorized: false,
       },
@@ -417,7 +427,7 @@ apiRouter.get("/teacher/uploaded-files", async (req, res) => {
 });
 
 apiRouter.delete("/teacher/uploaded-files/:fileId", async (req, res) => {
-  const { fileId } = req.params; 
+  const { fileId } = req.params;
   const { clerkId } = req.body; // Expect clerkId in body for DELETE auth
   if (!clerkId) return res.status(401).json({ error: "Authentication required." });
   const user = await getUserByClerkId(String(clerkId));
@@ -434,14 +444,14 @@ apiRouter.delete("/teacher/uploaded-files/:fileId", async (req, res) => {
         console.log(`Qdrant points deleted for file ${fileId}`);
       } catch (qError) { console.error(`Error deleting Qdrant points for file ${fileId}:`, qError); /* Continue with DB deletion */ }
     }
-    
+
     if (fileToDelete.fileUrl && !fileToDelete.fileUrl.startsWith('http')) { // Check if it's a local path
-        const filePathToDelete = path.isAbsolute(fileToDelete.fileUrl) ? fileToDelete.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(fileToDelete.fileUrl));
-        try { 
-            await fs.access(filePathToDelete); 
-            await fs.unlink(filePathToDelete); console.log(`Physical file deleted: ${filePathToDelete}`); 
-        }
-        catch (fsError) { if (fsError.code !== 'ENOENT') console.error(`Error deleting physical file ${filePathToDelete}:`, fsError); }
+      const filePathToDelete = path.isAbsolute(fileToDelete.fileUrl) ? fileToDelete.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(fileToDelete.fileUrl));
+      try {
+        await fs.access(filePathToDelete);
+        await fs.unlink(filePathToDelete); console.log(`Physical file deleted: ${filePathToDelete}`);
+      }
+      catch (fsError) { if (fsError.code !== 'ENOENT') console.error(`Error deleting physical file ${filePathToDelete}:`, fsError); }
     }
     await prisma.uploadedFile.delete({ where: { id: fileId } });
     res.status(204).send();
@@ -454,9 +464,9 @@ apiRouter.get("/teacher/notes", async (req, res) => {
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
-    const notes = await prisma.note.findMany({ 
-        where: { userId: user.id }, 
-        orderBy: { updatedAt: 'desc' } 
+    const notes = await prisma.note.findMany({
+      where: { userId: user.id },
+      orderBy: { updatedAt: 'desc' }
     });
     res.json(notes);
   } catch (error) { console.error("Error fetching notes:", error); res.status(500).json({ error: "Failed to fetch notes" }); }
@@ -470,54 +480,54 @@ apiRouter.post("/teacher/notes", async (req, res) => {
   if (!title || !subject || !classLevel || !chapter || !board) return res.status(400).json({ error: "Missing required fields for note: Title, Subject, Class Level, Chapter, Board." });
   try {
     const newNote = await prisma.note.create({
-      data: { 
-          userId: user.id, title, content: content || null, subject, classLevel, chapter, board, 
-          language: language || 'en', institution: institution || null, 
-          department: department || null, courseCode: courseCode || null 
-        },
+      data: {
+        userId: user.id, title, content: content || null, subject, classLevel, chapter, board,
+        language: language || 'en', institution: institution || null,
+        department: department || null, courseCode: courseCode || null
+      },
     });
     res.status(201).json(newNote);
   } catch (error) { console.error("Error creating note:", error); res.status(500).json({ error: "Failed to create note" }); }
 });
 
 apiRouter.put("/teacher/notes/:noteId", async (req, res) => {
-    const { noteId } = req.params;
-    const { clerkId, title, content, subject, classLevel, chapter, board, language, institution, department, courseCode } = req.body;
-    if (!clerkId) return res.status(401).json({ error: "Clerk ID required." });
-    const user = await getUserByClerkId(clerkId);
-    if (!user) return res.status(404).json({ error: "User not found." });
+  const { noteId } = req.params;
+  const { clerkId, title, content, subject, classLevel, chapter, board, language, institution, department, courseCode } = req.body;
+  if (!clerkId) return res.status(401).json({ error: "Clerk ID required." });
+  const user = await getUserByClerkId(clerkId);
+  if (!user) return res.status(404).json({ error: "User not found." });
 
-    try {
-        const noteToUpdate = await prisma.note.findFirst({
-            where: { id: noteId, userId: user.id }
-        });
-        if (!noteToUpdate) return res.status(404).json({ error: "Note not found or not owned by user." });
+  try {
+    const noteToUpdate = await prisma.note.findFirst({
+      where: { id: noteId, userId: user.id }
+    });
+    if (!noteToUpdate) return res.status(404).json({ error: "Note not found or not owned by user." });
 
-        const updatedNote = await prisma.note.update({
-            where: { id: noteId },
-            data: { 
-                title: title || undefined, // Only update if provided
-                content: content, // Allow setting content to empty string
-                subject: subject || undefined, 
-                classLevel: classLevel || undefined, 
-                chapter: chapter || undefined, 
-                board: board || undefined, 
-                language: language || undefined, 
-                institution: institution, 
-                department: department, 
-                courseCode: courseCode, 
-                updatedAt: new Date() 
-            }
-        });
-        res.json(updatedNote);
-    } catch (error) {
-        console.error(`Error updating note ${noteId}:`, error);
-        res.status(500).json({ error: "Failed to update note." });
-    }
+    const updatedNote = await prisma.note.update({
+      where: { id: noteId },
+      data: {
+        title: title || undefined, // Only update if provided
+        content: content, // Allow setting content to empty string
+        subject: subject || undefined,
+        classLevel: classLevel || undefined,
+        chapter: chapter || undefined,
+        board: board || undefined,
+        language: language || undefined,
+        institution: institution,
+        department: department,
+        courseCode: courseCode,
+        updatedAt: new Date()
+      }
+    });
+    res.json(updatedNote);
+  } catch (error) {
+    console.error(`Error updating note ${noteId}:`, error);
+    res.status(500).json({ error: "Failed to update note." });
+  }
 });
 
 apiRouter.delete("/teacher/notes/:noteId", async (req, res) => {
-  const { noteId } = req.params; 
+  const { noteId } = req.params;
   const { clerkId } = req.body;
   if (!clerkId) return res.status(401).json({ error: "Auth required" });
   const user = await getUserByClerkId(clerkId);
@@ -575,14 +585,14 @@ apiRouter.post("/teacher/profile", async (req, res) => {
   try {
     const updatedUser = await prisma.user.update({
       where: { id: user.id }, // Use internal DB ID for update
-      data: { 
-          name: name || user.name, // Allow partial updates
-          // email: email || user.email, // Email usually managed by Clerk, avoid changing here unless explicitly intended
-          department: department, // Allow setting to null or string
-          institution: institution 
-        },
+      data: {
+        name: name || user.name, // Allow partial updates
+        // email: email || user.email, // Email usually managed by Clerk, avoid changing here unless explicitly intended
+        department: department, // Allow setting to null or string
+        institution: institution
+      },
     });
-    res.status(200).json({ message: "Profile updated successfully.", profile: { name: updatedUser.name, email: updatedUser.email, department: updatedUser.department, institution: updatedUser.institution }});
+    res.status(200).json({ message: "Profile updated successfully.", profile: { name: updatedUser.name, email: updatedUser.email, department: updatedUser.department, institution: updatedUser.institution } });
   } catch (error) { console.error("Error updating teacher profile:", error); res.status(500).json({ error: "Failed to update profile" }); }
 });
 
@@ -594,12 +604,12 @@ apiRouter.get("/teacher/chat-history", async (req, res) => {
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
     const histories = await prisma.chatHistory.findMany({
-      where: { userId: user.id }, 
+      where: { userId: user.id },
       orderBy: { updatedAt: 'desc' },
-      select: { 
-        id: true, 
-        customTitle: true, 
-        frameworkId: true, 
+      select: {
+        id: true,
+        customTitle: true,
+        frameworkId: true,
         updatedAt: true,
         // For a preview, you might get the first user message or last AI summary
         // This is a bit more complex with JSONB messages array.
@@ -609,27 +619,27 @@ apiRouter.get("/teacher/chat-history", async (req, res) => {
       }
     });
     const formattedHistories = histories.map(h => {
-        const framework = pedagogicalFrameworksConfig.find(f => f.id === h.frameworkId);
-        return {
-            id: h.id,
-            title: h.customTitle || `${framework?.label || h.subject || 'Chat'} (${new Date(h.updatedAt).toLocaleDateString()})`,
-            date: new Date(h.updatedAt).toLocaleString(),
-            frameworkId: h.frameworkId || pedagogicalFrameworksConfig[0].id, 
-        };
+      const framework = pedagogicalFrameworksConfig.find(f => f.id === h.frameworkId);
+      return {
+        id: h.id,
+        title: h.customTitle || `${framework?.label || h.subject || 'Chat'} (${new Date(h.updatedAt).toLocaleDateString()})`,
+        date: new Date(h.updatedAt).toLocaleString(),
+        frameworkId: h.frameworkId || pedagogicalFrameworksConfig[0].id,
+      };
     });
     res.json(formattedHistories);
   } catch (error) { console.error("Error fetching chat histories:", error); res.status(500).json({ error: "Failed to fetch chat histories" }); }
 });
 
 apiRouter.get("/teacher/chat-history/:historyId", async (req, res) => {
-  const { historyId } = req.params; 
+  const { historyId } = req.params;
   const { clerkId } = req.query;
   if (!clerkId) return res.status(400).json({ error: "Clerk ID required" });
   const user = await getUserByClerkId(String(clerkId));
   if (!user) return res.status(404).json({ error: "User not found" });
   try {
-    const chatHistory = await prisma.chatHistory.findFirst({ 
-        where: { id: historyId, userId: user.id } 
+    const chatHistory = await prisma.chatHistory.findFirst({
+      where: { id: historyId, userId: user.id }
     });
     if (!chatHistory) return res.status(404).json({ error: "Chat history not found or access denied." });
     res.json(chatHistory); // Send the full chat history object
@@ -639,232 +649,290 @@ apiRouter.get("/teacher/chat-history/:historyId", async (req, res) => {
 // OLD /api/chat/generate-questions (Deprecated)
 apiRouter.post("/chat/generate-questions", async (req, res) => {
   console.warn("[DEPRECATED] /api/chat/generate-questions called. Client should use /api/ai/pedagogy-assist.");
-  return res.status(410).json({ 
-      error: "This endpoint is deprecated.",
-      message: "Please update your client application to use the new /api/ai/pedagogy-assist endpoint for all AI chat interactions."
+  return res.status(410).json({
+    error: "This endpoint is deprecated.",
+    message: "Please update your client application to use the new /api/ai/pedagogy-assist endpoint for all AI chat interactions."
   });
 });
 
 
-// *****************************************************************************
-// ******************* ADVANCED AI PEDAGOGY CO-PILOT ROUTE *********************
-// *****************************************************************************
 apiRouter.post("/ai/pedagogy-assist", async (req, res) => {
   const {
-    clerkId, userQuery, activeFrameworkId, aiTask, preferences,
-    customPromptText, chatHistoryId, activeContextItemIds,
+    clerkId, userQuery, activeFrameworkId, aiTask,
+    preferences, customPromptText, chatHistoryId, activeContextItems,
   } = req.body;
 
-  console.log(`\n[POST /api/ai/pedagogy-assist] Received Request`);
-  console.log(`  Clerk ID: ${clerkId}, Framework: ${activeFrameworkId}, Task: ${aiTask}`);
+  console.log(`\n[AI PEDAGOGY ASSIST] Clerk: ${clerkId}, Framework: ${activeFrameworkId}, Task: ${aiTask}`);
+  if (preferences) console.log(`  Prefs: ${JSON.stringify(preferences).substring(0, 100)}...`);
+  if (activeContextItems && activeContextItems.length > 0) console.log(`  Context Items: ${activeContextItems.length}`);
 
-  if (!clerkId) return res.status(401).json({ error: "Authentication required." });
+  if (!clerkId) return res.status(401).json({ error: "Authentication required: Clerk ID missing." });
   const user = await getUserByClerkId(clerkId);
-  if (!user) return res.status(404).json({ error: "User not found in database." });
+  if (!user) return res.status(404).json({ error: "Authenticated user not found in database." });
   if (!activeFrameworkId || !aiTask) return res.status(400).json({ error: "Framework and AI task are required." });
 
   try {
     let ragContextString = "";
     const usedSourceDetails = [];
 
-    if (activeContextItemIds && activeContextItemIds.length > 0) {
-    console.log("  Processing RAG context for item IDs:", activeContextItemIds);
-    const contextFetchPromises = activeContextItemIds.map(async (itemId) => {
-        // Try to find it as a document
-        let docFile = await prisma.uploadedFile.findFirst({
-            where: { id: itemId, uploadedById: user.id },
-        });
-        if (docFile) {
-            console.log(`RAG: Found docFile for ID ${itemId}:`, {id: docFile.id, fileName: docFile.fileName, isVectorized: docFile.isVectorized, fileUrl: docFile.fileUrl});
-            if (docFile.fileUrl && docFile.isVectorized) {
-                const filePathOnServer = path.isAbsolute(docFile.fileUrl) 
-                                           ? docFile.fileUrl 
-                                           : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
-                console.log(`RAG: Attempting to load document content from: ${filePathOnServer}`);
-                try {
-                    const content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
-                    if (content) {
-                        usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
-                        return `CONTEXT SOURCE (Document: ${docFile.fileName}):\n${content}\nEND CONTEXT SOURCE (Document: ${docFile.fileName})\n\n`;
-                    } else { console.warn(`RAG: loadFileContentForRAG returned null/empty for ${docFile.fileName}`); }
-                } catch (err) { console.warn(`RAG: Error in loadFileContentForRAG for ${docFile.fileName}:`, err.message); }
-            } else {
-                console.warn(`RAG: Document ${docFile.fileName} (ID: ${itemId}) not used. Has URL: ${!!docFile.fileUrl}, Is Vectorized: ${!!docFile.isVectorized}`);
-            }
-            return null; // Processed as doc, even if not used.
+    if (activeContextItems && activeContextItems.length > 0) {
+      console.log("  Processing RAG context for items:", activeContextItems.map(item => `${item.type}:${item.id.substring(0, 8)}... (${item.name})`));
+      for (const itemInfo of activeContextItems) {
+        if (!itemInfo || !itemInfo.id || !itemInfo.type || !itemInfo.name) {
+          console.warn("RAG: Invalid itemInfo in activeContextItems, skipping:", itemInfo); continue;
         }
-
-        // If not a document, try to find it as a note
-        let note = await prisma.note.findFirst({
-            where: { id: itemId, userId: user.id },
-        });
-        if (note) {
-            console.log(`RAG: Found note for ID ${itemId}:`, {id: note.id, title: note.title, hasContent: !!note.content});
-            if (note.content) {
-                // TODO: Check note.isVectorized if you implement vectorization for notes
-                usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
-                return `CONTEXT SOURCE (Note: ${note.title}):\n${note.content}\nEND CONTEXT SOURCE (Note: ${note.title})\n\n`;
-            } else {
-                console.warn(`RAG: Note ${note.title} (ID: ${itemId}) has no content.`);
-            }
-            return null; // Processed as note
+        let content = null;
+        if (itemInfo.type === 'document') {
+          const docFile = await prisma.uploadedFile.findFirst({ where: { id: itemInfo.id, uploadedById: user.id } });
+          if (docFile?.fileUrl && docFile.isVectorized) { // Make sure it's vectorized to be relevant for RAG
+            const filePathOnServer = path.isAbsolute(docFile.fileUrl) ? docFile.fileUrl : path.join(UPLOAD_DIR_FULL_PATH, path.basename(docFile.fileUrl));
+            content = await loadFileContentForRAG(filePathOnServer, docFile.fileType);
+            if (content) {
+              usedSourceDetails.push({ id: docFile.id, name: docFile.fileName, type: 'document' });
+              ragContextString += `\n\n--- START CONTEXT FROM: Document - ${docFile.fileName} ---\n${content}\n--- END CONTEXT FROM: Document - ${docFile.fileName} ---\n\n`;
+            } else console.warn(`RAG: No content from document ${docFile.fileName}`);
+          } else console.warn(`RAG: Document ${itemInfo.name} (ID: ${itemInfo.id}) not found, not vectorized, or no fileUrl.`);
+        } else if (itemInfo.type === 'note') {
+          const note = await prisma.note.findFirst({ where: { id: itemInfo.id, userId: user.id } });
+          if (note?.content) {
+            content = note.content;
+            usedSourceDetails.push({ id: note.id, name: note.title, type: 'note' });
+            ragContextString += `\n\n--- START CONTEXT FROM: Note - ${note.title} ---\n${content}\n--- END CONTEXT FROM: Note - ${note.title} ---\n\n`;
+          } else console.warn(`RAG: Note ${itemInfo.name} (ID: ${itemInfo.id}) not found or no content.`);
         }
-        
-        console.warn(`RAG: Context Item ID ${itemId} not found as document or note for user ${user.id}`);
-        return null;
-    });
-    const resolvedContexts = (await Promise.all(contextFetchPromises)).filter(Boolean);
-    ragContextString = resolvedContexts.join("");
-      if (ragContextString) console.log(`  Assembled RAG Context from ${usedSourceDetails.length} items.`);
-      else console.log("  No usable RAG context content found from selected items.");
+      }
+      if (ragContextString) console.log(`  Assembled RAG Context from ${usedSourceDetails.length} items. Total length: ${ragContextString.length}.`);
+      else console.log("  No usable RAG content found from selected items.");
+    } else {
+      console.log("  No activeContextItems provided. Proceeding without specific RAG context from user documents/notes.");
     }
 
-    let systemInstruction = `You are "EduCraft AI", an expert pedagogical co-pilot for educators. Your responses should be helpful, clear, and directly address the user's request. Adhere to the specified pedagogical framework.`;
-    let taskSpecificInstructions = "";
-    // THE CRITICAL OUTPUT FORMAT INSTRUCTION BLOCK:
-    let outputFormatInstructions = `
-CRITICAL: Respond ONLY with a valid JSON object. This JSON object MUST have two top-level keys: "summaryText" (a brief, natural language summary of your response or action taken, keep it concise) and "structuredOutput" (this will contain the main detailed content). 
-Ensure mathematical or chemical equations are ALWAYS in LaTeX notation: inline math with $...$ (e.g., $E=mc^2$), block/display math with $$...$$ (e.g., $$\\sum_{i=0}^n i = \\frac{n(n+1)}{2}$$).
-If generating a table, "structuredOutput" should be: {"type": "table", "data": {"headers": ["Header1", ...], "rows": [["r1c1", ...], ["r2c1", ...]]}}.
-If generating a list of questions, "structuredOutput" should be: {"type": "question_list", "data": [{"questionText": "...", "bloomLevel": "(if applicable, e.g., 'Apply')", "dokLevel": "(if applicable, e.g., 'DOK 2')", "justification": "...", "options": ["opt1", ...], "correctAnswerIndex": 0 (for MCQs), "rubricHints": "..."}]}.
-If suggesting activities, "structuredOutput" should be: {"type": "activity_suggestion_list", "data": [{"title": "...", "description": "...", "pedagogicalRationale": "...", "materialsNeeded": ["..."], "udlConnections": ["..."], "frameworkTags": ["Bloom:Analyze", "DOK:3"]}]}.
-If providing simple text/explanation, "structuredOutput" should be: {"type": "simple_text", "data": {"text": "Your detailed textual response here, which can include Markdown for formatting and LaTeX for equations."}}.
-If generating a list of learning objectives, "structuredOutput" should be: {"type": "objectives_list", "data": [{"objective": "...", "rationale": "...", "frameworkAlignment": "e.g., Bloom's Understand"}]}.
-If providing UDL analysis/suggestions, "structuredOutput" should be: {"type": "udl_analysis", "data": {"principle": "Representation/Action/Engagement", "checkpoint": "e.g., 1.1 Offer ways of customizing the display", "suggestions": ["suggestion1", "suggestion2"], "rationale": "..."}}.
-Do not include any text outside this JSON object. Do not use markdown backticks like \`\`\`json ... \`\`\` to wrap the JSON.
+    let systemInstruction = `You are "EduCraft AI", an expert pedagogical co-pilot for educators. Your responses should be helpful, clear, and directly address the user's request.
+You MUST adhere to the specified pedagogical framework and AI task.
+The user's overall preferences are: ${JSON.stringify(customPromptText || "None given", null, 2)}.
+The user's specific preferences for this task, within the current framework, are: ${JSON.stringify(preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {}, null, 2)}.`;
+
+    const currentFramework = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId);
+    if (currentFramework) systemInstruction += `\nThe current pedagogical framework is: "${currentFramework.label}".`;
+
+    const currentTaskInfo = aiTasksConfig[activeFrameworkId]?.find(t => t.id === aiTask) || aiTasksConfig.common.find(t => t.id === aiTask);
+    if (currentTaskInfo) systemInstruction += `\nThe current AI task is: "${currentTaskInfo.label}".`;
+
+
+    let taskSpecificPrompts = "";
+    // === DETAILED TASK-SPECIFIC PROMPT ENGINEERING ===
+    // This is CRITICAL. Each task needs specific instructions for content and JSON structure.
+    // The `preferences` object passed from frontend (e.g., `preferences[activeFrameworkId][aiTask]`) should be used here.
+    // Example for 'generate_questions':
+    if (aiTask === 'generate_questions') {
+      const qPrefs = preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {};
+      taskSpecificPrompts = `
+        Task: Generate educational questions.
+        User Query: "${userQuery}"
+        Based on the query, RAG context (if any), and these preferences:
+        - Target Bloom's Levels (if Bloom's Architect framework): ${qPrefs.targetLevels?.join(', ') || 'Not specified'}
+        - Target DOK Level (if DOK Navigator framework): ${qPrefs.targetDOK || 'Not specified'}
+        - Number of questions: ${qPrefs.numQuestions || qPrefs.numItems || 3}
+        - Preferred question types: ${qPrefs.questionTypes ? Object.entries(qPrefs.questionTypes).filter(([_, v]) => v).map(([k, _]) => k).join(', ') : 'Variety'}
+        - Additional instructions from user query: "${userQuery}"
+
+        Output Format for "structuredOutput" (type: "question_list"):
+        An array of objects, where each object represents a question and has:
+        "questionText": "The full text of the question (can include LaTeX for math: $inline$ or $$block$$).",
+        "bloomLevel": "(string, e.g., 'Apply', 'Analyze', only if Bloom's Architect framework is active, otherwise null or omit)",
+        "dokLevel": "(string, e.g., 'DOK 2', 'DOK 3', only if DOK Navigator framework is active, otherwise null or omit)",
+        "options": ["Array of strings for MCQ options. Omit or null if not MCQ.", "Option B", "..."],
+        "correctAnswerIndex": (integer, 0-based index for correct MCQ option. Omit or null if not MCQ or no single correct answer.),
+        "justification": "Brief explanation for why the question is relevant or how it assesses the targeted skill/level.",
+        "rubricHints": "Brief hints for grading or what to look for in a good answer, especially for open-ended questions."
+        Provide a concise "summaryText" like "Generated X questions on [topic] focusing on [levels/types]."
+        `;
+    } else if (aiTask === 'suggest_activities') {
+      const actPrefs = preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {};
+      taskSpecificPrompts = `
+        Task: Suggest educational activities.
+        User Query: "${userQuery}"
+        Based on the query, RAG context (if any), and these preferences:
+        - Target DOK Level (if DOK Navigator): ${actPrefs.targetDOK || 'Not specified'}
+        - Number of activities: ${actPrefs.numItems || 2}
+        - Inquiry Model (if Constructivist Spark): ${actPrefs.inquiryModel || 'Not specified'}
+        - Additional instructions from user query: "${userQuery}"
+
+        Output Format for "structuredOutput" (type: "activity_suggestion_list"):
+        An array of objects, where each object represents an activity suggestion and has:
+        "title": "Concise title for the activity.",
+        "description": "Detailed description of the activity, what students will do.",
+        "pedagogicalRationale": "Explanation of why this activity is effective for the learning goals and chosen framework.",
+        "materialsNeeded": ["Array of strings for materials.", "e.g., Whiteboard", "Markers"],
+        "udlConnections": ["Array of strings describing connections to UDL principles/checkpoints, if UDL Enhancer is active or relevant.", "e.g., Provides multiple means of representation (visual aids)"],
+        "frameworkTags": ["Array of strings, e.g., 'Bloom:Analyze', 'DOK:3', 'Constructivist:Inquiry'] - tag with relevant framework aspects."
+        Provide a concise "summaryText" like "Suggested X activities for [topic] aligning with [framework]."
+        `;
+    }
+    // ... ADD MORE ELSE IF FOR OTHER aiTask VALUES ('refine_objectives', 'summarize_content', framework-specific tasks)
+    // EACH MUST DEFINE THE EXPECTED `structuredOutput` type and its fields.
+    else { // Fallback for tasks not yet fully specified
+      taskSpecificPrompts = `
+        Task: ${aiTask}. User Query: "${userQuery}".
+        Preferences: ${JSON.stringify(preferences?.[activeFrameworkId]?.[aiTask] || preferences?.[activeFrameworkId] || preferences || {}, null, 2)}.
+        Please provide a helpful and relevant response. For "structuredOutput", use type "simple_text" with a "text" field containing your main response.
+        "summaryText" should be a brief overview.
+        `;
+    }
+
+    const outputFormatInstruction = `
+    CRITICAL: Your entire response MUST be a single, valid JSON object. Do NOT include any text outside this JSON object.
+    The JSON object must have two top-level keys:
+    1. "summaryText": (string) A very brief, natural language summary of your response (1-2 sentences). This summary should also briefly mention any extra info or explanations you've included in the structured output.
+    2. "structuredOutput": (object) An object containing the main detailed content. The structure of this object depends on the AI task:
+       - For "${aiTask}": ${taskSpecificPrompts.includes("Output Format for \"structuredOutput\"") ? taskSpecificPrompts.substring(taskSpecificPrompts.indexOf("Output Format for \"structuredOutput\"")) : 'Follow the specific format described in the task instructions above. If task instructions are generic, use {"type": "simple_text", "data": {"text": "Your detailed response here..."}}.'}
+
+    For any mathematical or chemical equations, use LaTeX notation: $inline$ for inline math and $$block$$ for display math.
+    If the task involves generating content like questions or activities, and you are also providing additional explanations or context related to them, include this extra information *within* the relevant part of the "structuredOutput". For example, a "question_list" item could have an "explanation" field, or an "activity_suggestion_list" item could have a "further_details" field. Make this extra info clearly part of the structured data.
+    Do not use markdown backticks like \`\`\`json ... \`\`\` to wrap the JSON.
     `;
 
+    const fullPromptForLLM = `${systemInstruction}\n\n${taskSpecificPrompts}\n\n${ragContextString ? `Relevant Context from Teacher's Materials (Prioritize this if relevant):\n${ragContextString}\nEND OF TEACHER'S MATERIALS\n\n` : "No specific teacher materials were selected for RAG context.\n\n"}${outputFormatInstruction}`;
 
-    const currentFrameworkConfig = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId);
-    if (currentFrameworkConfig) systemInstruction += ` The educator is currently focusing on the "${currentFrameworkConfig.label}" pedagogical framework.`;
-    if (customPromptText) systemInstruction += `\nTeacher's General AI Instructions (Follow these closely):\n${customPromptText}`;
-
-    if (aiTask === 'generate_questions') {
-        taskSpecificInstructions = `Task: Generate educational questions. User Query: "${userQuery}". Preferences for questions: ${JSON.stringify(preferences || {})}. Ensure "structuredOutput" is "question_list".`;
-    } else if (aiTask === 'suggest_activities') {
-        taskSpecificInstructions = `Task: Suggest educational activities. User Query: "${userQuery}". Preferences for activities: ${JSON.stringify(preferences || {})}. Ensure "structuredOutput" is "activity_suggestion_list".`;
-    } 
-    // ... (MORE else if blocks for ALL your AI TASKS defined in frontend aiTasks constant) ...
-    else { // Fallback for unhandled tasks
-        taskSpecificInstructions = `Task: General Assistance for task type "${aiTask}". User Query: "${userQuery}". Preferences: ${JSON.stringify(preferences || {})}. Provide a helpful and relevant response.`;
-    }
-
-    const fullPromptForLLM = `${systemInstruction}\n\n${taskSpecificInstructions}\n\n${ragContextString ? `Relevant Context from Teacher's Uploaded Materials (Prioritize this information):\n${ragContextString}\nEND OF TEACHER'S MATERIALS\n\n` : ""}${outputFormatInstructions}`;
-    
-    console.log("  Full Prompt for LLM (First 600 chars):", fullPromptForLLM.substring(0,600) + (fullPromptForLLM.length > 600 ? "..." : ""));
+    console.log("  Full Prompt for LLM (first 500 chars):", fullPromptForLLM.substring(0, 500) + "...");
+    // console.log("Full prompt for LLM:", fullPromptForLLM); // For debugging full prompt
 
     let llmApiResponseText;
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
-        const result = await model.generateContent(fullPromptForLLM);
-        llmApiResponseText = result.response.text();
-        console.log("  LLM Raw Response (First 600 chars):", llmApiResponseText.substring(0,600) + (llmApiResponseText.length > 600 ? "..." : ""));
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // or gemini-pro
+      const result = await model.generateContent(fullPromptForLLM);
+      llmApiResponseText = result.response.text();
+      console.log("  LLM Raw Response (first 500 chars):", llmApiResponseText.substring(0, 500) + "...");
     } catch (llmError) {
-        console.error("!!!! LLM API Call Error:", llmError);
-        throw new Error(`AI model communication failed: ${llmError.message || String(llmError)}`);
+      console.error("!!!! LLM API Call Error:", llmError);
+      let errorMessage = `AI model communication failed.`;
+      if (llmError.message) errorMessage += ` Details: ${llmError.message}`;
+      if (String(llmError).includes("SAFETY")) errorMessage = "AI response blocked by safety filters. Please rephrase or adjust content.";
+      throw new Error(errorMessage);
     }
 
     let parsedAiResponse;
     try {
-        let jsonString = llmApiResponseText.trim();
-        
-        // Attempt to remove markdown code fences if present
-        // Handles ```json ... ``` or just ``` ... ```
-        const fenceMatch = jsonString.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-        if (fenceMatch && fenceMatch[1]) {
-            jsonString = fenceMatch[1].trim();
-            console.log("  Successfully stripped markdown fences from LLM response.");
-        } else {
-            console.log("  No markdown fences found or regex didn't match, attempting to parse as is.");
-        }
-        
-        parsedAiResponse = JSON.parse(jsonString);
+      let jsonString = llmApiResponseText.trim();
+      // Enhanced stripping of markdown fences (more robust)
+      if (jsonString.startsWith("```json") && jsonString.endsWith("```")) {
+        jsonString = jsonString.substring(7, jsonString.length - 3).trim();
+      } else if (jsonString.startsWith("```") && jsonString.endsWith("```")) {
+        jsonString = jsonString.substring(3, jsonString.length - 3).trim();
+      }
 
-        if (typeof parsedAiResponse.summaryText !== 'string' || typeof parsedAiResponse.structuredOutput === 'undefined') {
-            console.warn("LLM response parsed but missing required keys (summaryText or structuredOutput). Raw JSON:", jsonString.substring(0, 300) + "...");
-            // Provide a more graceful fallback if keys are missing but it's still valid JSON
-            parsedAiResponse = { 
-                summaryText: parsedAiResponse.summaryText || "AI response structure was incomplete. Full content in details.",
-                structuredOutput: parsedAiResponse.structuredOutput || { type: "simple_text", data: { text: "Structured output was missing. Raw JSON: " + jsonString } }
-            };
-        }
+      parsedAiResponse = JSON.parse(jsonString);
+
+      if (typeof parsedAiResponse.summaryText !== 'string' || typeof parsedAiResponse.structuredOutput === 'undefined') {
+        console.warn("LLM response parsed but missing required keys. Fallback. Raw JSON:", jsonString.substring(0, 300));
+        parsedAiResponse = {
+          summaryText: parsedAiResponse.summaryText || "AI response structure was incomplete. See details or retry.",
+          structuredOutput: parsedAiResponse.structuredOutput || { type: "simple_text", data: { text: "Structured output missing/malformed. Raw was: " + jsonString } }
+        };
+      }
     } catch (parseError) {
-      console.error("!!!! LLM JSON Parse Error:", parseError, "\nRaw LLM Response (after initial trim) was:\n", llmApiResponseText.trim().substring(0, 1000) + "...");
+      console.error("!!!! LLM JSON Parse Error:", parseError.message);
+      console.error("Raw LLM Response that failed parsing:\n", llmApiResponseText);
+      // Provide a more user-friendly error in the structuredOutput
       parsedAiResponse = {
-        summaryText: "AI response format error. Displaying raw output.",
-        structuredOutput: { type: "simple_text", data: { text: `Raw AI Output (JSON parse failed: ${parseError.message}):\n\n${llmApiResponseText}` }}
+        summaryText: "AI response format error. The AI's output was not valid JSON.",
+        structuredOutput: { type: "simple_text", data: { text: `**Technical Error:** The AI's response could not be understood by the system (JSON parse failed: ${parseError.message}).\n\n<details><summary>View Raw AI Output (for debugging)</summary><pre>${llmApiResponseText.replace(/</g, "<").replace(/>/g, ">")}</pre></details>` } }
       };
     }
 
-    const messagesToStoreEntry = [
-      { role: "user", content: userQuery, preferences: preferences, aiTaskType: aiTask, timestamp: new Date().toISOString() },
-      { 
-        role: "assistant", 
-        summaryText: parsedAiResponse.summaryText,
-        structuredContent: parsedAiResponse.structuredOutput,
-        usedSources: usedSourceDetails, 
-        aiTaskType: aiTask,
-        timestamp: new Date().toISOString() 
-      }
-    ];
-    
-    let finalChatHistoryId = chatHistoryId;
-    let finalChatTitle = ""; 
+    // --- Save/Update Chat History ---
+    const userMessageEntry = {
+      role: "user",
+      userQuery: userQuery, // Prisma schema uses 'userQuery' for user messages
+      // attachments: if handling one-time attachments, store their metadata here
+      timestamp: new Date().toISOString(),
+      // Store user's active settings for this turn for potential future context or display
+      activeFrameworkIdForTurn: activeFrameworkId,
+      aiTaskForTurn: aiTask,
+      preferencesForTurn: preferences,
+    };
+    const assistantMessageEntry = {
+      role: "assistant",
+      summaryText: parsedAiResponse.summaryText,
+      structuredContent: parsedAiResponse.structuredOutput,
+      usedSources: usedSourceDetails,
+      aiTaskType: aiTask, // The task that generated this response
+      timestamp: new Date().toISOString()
+    };
 
-    const querySnippetForTitle = userQuery ? userQuery.substring(0, 30) + (userQuery.length > 30 ? "..." : "") : aiTask.replace(/_/g, ' ');
-    const currentFrameworkLabelForTitle = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId)?.label || activeFrameworkId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    let finalChatHistoryId = chatHistoryId;
+    let finalChatTitle = "";
+    const currentFrameworkLabel = pedagogicalFrameworksConfig.find(f => f.id === activeFrameworkId)?.label || activeFrameworkId.replace(/_/g, ' ');
+    const currentTaskLabel = aiTasksConfig[activeFrameworkId]?.find(t => t.id === aiTask)?.label || aiTasksConfig.common.find(t => t.id === aiTask)?.label || aiTask.replace(/_/g, ' ');
 
     if (finalChatHistoryId) {
-        const existingChat = await prisma.chatHistory.findUnique({ where: { id: finalChatHistoryId, userId: user.id } });
-        if (existingChat) {
-            const updatedChat = await prisma.chatHistory.update({
-                where: { id: finalChatHistoryId },
-                data: {
-                    messages: { push: messagesToStoreEntry },
-                    lastPreferences: preferences, 
-                    activeContextItems: activeContextItemIds ? activeContextItemIds.map(item => ({id: item.id, type: item.type, name: item.name})) : [], 
-                    frameworkId: activeFrameworkId,
-                    updatedAt: new Date()
-                },
-            });
-            finalChatTitle = updatedChat.customTitle || currentFrameworkLabelForTitle + ": " + querySnippetForTitle;
-        } else { finalChatHistoryId = null; } 
-    }
-    
-    if (!finalChatHistoryId) {
-        finalChatTitle = currentFrameworkLabelForTitle + ": " + querySnippetForTitle;
-        const newChat = await prisma.chatHistory.create({
-            data: {
-                userId: user.id,
-                messages: messagesToStoreEntry,
-                customTitle: finalChatTitle,
-                frameworkId: activeFrameworkId,
-                subject: preferences?.subject || currentFrameworkLabelForTitle,
-                class: preferences?.classLevel || "General",
-                chapter: preferences?.chapter || querySnippetForTitle.substring(0,50),
-                lastPreferences: preferences,
-                activeContextItems: activeContextItemIds ? activeContextItemIds.map(item => ({id: item.id, type: item.type, name: item.name})) : [],
-            }
+      const existingChat = await prisma.chatHistory.findUnique({ where: { id: finalChatHistoryId, userId: user.id } });
+      if (existingChat) {
+        const updatedMessages = Array.isArray(existingChat.messages)
+          ? [...existingChat.messages, userMessageEntry, assistantMessageEntry]
+          : [userMessageEntry, assistantMessageEntry];
+        const updatedChat = await prisma.chatHistory.update({
+          where: { id: finalChatHistoryId },
+          data: {
+            messages: updatedMessages,
+            lastPreferences: preferences,
+            activeContextItems: activeContextItems || [],
+            frameworkId: activeFrameworkId, // Update if framework changed mid-session
+            updatedAt: new Date()
+          },
         });
-        finalChatHistoryId = newChat.id;
+        finalChatTitle = updatedChat.customTitle || `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0, 20)}...)`;
+      } else {
+        console.warn(`ChatHistory ID ${finalChatHistoryId} not found for user ${user.id}. Creating new chat.`);
+        finalChatHistoryId = null; // Force new chat creation
+      }
     }
-    
-    res.status(200).json({ 
-      summaryText: parsedAiResponse.summaryText, 
-      structuredOutput: parsedAiResponse.structuredOutput, 
-      chatHistoryId: finalChatHistoryId, 
+
+    if (!finalChatHistoryId) { // Create new chat history
+      finalChatTitle = `${currentFrameworkLabel}: ${currentTaskLabel} (${userQuery.substring(0, 20)}...)`;
+      // Attempt to get subject/class/chapter from preferences for better default categorization
+      const generalPrefs = preferences?.[activeFrameworkId] || preferences || {};
+      const subject = generalPrefs.subject || currentFrameworkLabel;
+      const classLevel = generalPrefs.classLevel || "General";
+      const chapter = generalPrefs.chapter || userQuery.substring(0, 50);
+
+      const newChat = await prisma.chatHistory.create({
+        data: {
+          userId: user.id,
+          messages: [userMessageEntry, assistantMessageEntry],
+          customTitle: finalChatTitle,
+          frameworkId: activeFrameworkId,
+          subject: subject,
+          class: classLevel,
+          chapter: chapter,
+          lastPreferences: preferences,
+          activeContextItems: activeContextItems || [],
+        }
+      });
+      finalChatHistoryId = newChat.id;
+    }
+
+    console.log(`  Chat interaction saved/updated. History ID: ${finalChatHistoryId}. Title: ${finalChatTitle}`);
+    res.status(200).json({
+      summaryText: parsedAiResponse.summaryText,
+      structuredOutput: parsedAiResponse.structuredOutput,
+      chatHistoryId: finalChatHistoryId,
       usedSources: usedSourceDetails,
-      chatTitle: finalChatTitle 
+      chatTitle: finalChatTitle // Send back the potentially updated/new title
     });
 
   } catch (error) {
-    console.error("!!!! AI Pedagogy Assist Endpoint Error Catch Block:", error);
-    res.status(500).json({ error: "Failed to process AI co-pilot request. " + (error.message || "Unknown server error.") });
+    console.error("!!!! AI Pedagogy Assist Endpoint CRITICAL Error:", error);
+    res.status(500).json({
+      error: "Failed to process AI co-pilot request.",
+      message: error.message || "Unknown server error."
+    });
   }
 });
 
+
 // --- Mount API Router ---
-app.use('/api', apiRouter); 
+app.use('/api', apiRouter);
 
 // --- Root Route & Start Server ---
 app.get('/', (req, res) => {

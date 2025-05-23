@@ -1,3 +1,5 @@
+// src/components/Navbar.tsx
+
 import React, { useContext } from 'react'; // Added useContext
 import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
