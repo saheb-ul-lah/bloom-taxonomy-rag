@@ -74,17 +74,15 @@ The application revolves around a sophisticated RAG pipeline and a user-friendly
 *   **dotenv** for environment variable management.
 
 ### Database:
-*   **PostgreSQL** (managed by Supabase).
-*   **Qdrant** (Vector Database - either local Docker instance or Qdrant Cloud).
+*   **PostgreSQL** 
+*   **Qdrant** (Vector Database ).
 
 ### Authentication:
-*   **Clerk** (handles user signup, sign-in, session management, and user data synchronization via webhooks).
+*   **Clerk** .
 
 ---
 
-## 📈 Project Progress (As of our latest discussions)
-
-The project has made significant strides, with many core functionalities in place or well underway:
+## 📈 Project Progress
 
 **Frontend:**
 
@@ -206,9 +204,7 @@ For a more visually appealing and modern UI:
 
 ---
 
-## 🚀 Getting Started (Current Project Setup)
-
-**(This section would detail how someone else could clone and run your project)**
+## 🚀 Getting Started
 
 1.  **Prerequisites:**
     *   Node.js (v18+ recommended)
